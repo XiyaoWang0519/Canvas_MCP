@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 
-import { CanvasClient } from '../canvas/client.js';
+import { CanvasClient, type CanvasResult } from '../canvas/client.js';
 import {
   CanvasAnnouncement,
   CanvasAssignment,
@@ -10,7 +10,7 @@ import {
   CanvasTodoItem
 } from '../canvas/types.js';
 import { AppError, unknownError } from '../core/errors.js';
-import { logToolEvent } from '../core/logger.js';
+import { log, logToolEvent } from '../core/logger.js';
 import {
   getAssignmentOutputSchema,
   listAnnouncementsOutputSchema,
@@ -489,13 +489,24 @@ function registerListUpcoming(server: McpServer, deps: ToolDependencies): void {
       metaStatuses.push(coursesResult.status);
 
       for (const course of coursesResult.data) {
-        const assignmentsResult = await deps.canvas.getAll<CanvasAssignment>(
-          `/api/v1/courses/${course.id}/assignments`,
-          {
-            'include[]': ['submission'],
-            bucket: 'upcoming'
+        let assignmentsResult: CanvasResult<CanvasAssignment[]>;
+        try {
+          assignmentsResult = await deps.canvas.getAll<CanvasAssignment>(
+            `/api/v1/courses/${course.id}/assignments`,
+            {
+              'include[]': ['submission'],
+              bucket: 'upcoming'
+            }
+          );
+        } catch (error) {
+          if (error instanceof AppError && error.code === 'AUTHORIZATION_FAILED') {
+            log('warn', 'Skipping course for upcoming assignments due to authorization error', {
+              course_id: course.id
+            });
+            continue;
           }
-        );
+          throw error;
+        }
 
         if (assignmentsResult.requestIds) {
           metaRequestIds.push(...assignmentsResult.requestIds);

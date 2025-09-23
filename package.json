@@ -22,6 +22,7 @@
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
     "undici": "^7.16.0",
+    "ws": "^8.18.3",
     "zod": "^3.25.76"
   },
   "devDependencies": {

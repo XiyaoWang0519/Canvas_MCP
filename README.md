@@ -78,7 +78,7 @@ Each tool returns JSON via `structuredContent` (schema enforced with Zod).
 
 | Tool | Input | Output |
 | ---- | ----- | ------ |
-| `list_courses` | `enrollment_state?: "active" \| "completed"` | `{ courses: Course[] }` |
+| `list_courses` | `enrollment_state?: "active" \| "completed"`, `include_past?: boolean`, `limit?: number` | `{ courses: Course[] }` |
 | `list_assignments` | `course_id: number`, optional `due_after`, `due_before` (ISO 8601), `search` | `{ assignments: Assignment[] }` |
 | `get_assignment` | `course_id: number`, `assignment_id: number` | `{ assignment: Assignment }` |
 | `list_announcements` | Optional `course_id`, optional `since` (ISO 8601) | `{ announcements: Announcement[] }` |

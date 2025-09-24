@@ -19,6 +19,7 @@ Local Model Context Protocol (MCP) server that exposes Canvas LMS read-only tool
   - `list_upcoming`
 - JSON console logging with request metadata and Canvas status codes
 - Consistent MCP error mapping for Canvas 401/403/404/429/5xx responses
+- Pre-built MCP prompts for common Canvas workflows (quickstart, assignment planning, announcements)
 
 ## Getting Started
 
@@ -116,6 +117,14 @@ UpcomingItem extends Assignment with { "source": "todo" | "assignment" }
 ```
 
 `list_upcoming` merges `/users/self/todo` and upcoming assignments (bucket filter) within the requested horizon, deduplicates by assignment id, and sorts by earliest due date.
+
+## Prompt Reference
+
+| Prompt | Input | Purpose |
+| ------ | ----- | ------- |
+| `canvas.quickstart` | _(none)_ | Kick-off instructions that remind the model how to explore Canvas data safely with the available tools. |
+| `canvas.assignment_brief` | `course_hint?: string`, `days?: string (digits)` | Guides the model through gathering assignments and upcoming todo items for a specific course and time horizon. |
+| `canvas.announcement_digest` | `course_hint?: string`, `since?: string (ISO-8601)` | Helps the model compile a digest of recent announcements, optionally scoped to a course or timeframe. |
 
 ## Logging & Errors
 

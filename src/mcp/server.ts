@@ -7,6 +7,7 @@ import { CanvasClient } from '../canvas/client.js';
 import { log } from '../core/logger.js';
 import { registerCanvasTools } from '../tools/index.js';
 import { APP_NAME, APP_VERSION } from '../core/meta.js';
+import { registerCanvasPrompts } from './prompts.js';
 
 export interface HttpServerConfig {
   canvasClient: CanvasClient;
@@ -124,6 +125,7 @@ function createMcpServer(canvasClient: CanvasClient): McpServer {
   });
 
   registerCanvasTools(server, { canvas: canvasClient });
+  registerCanvasPrompts(server);
   return server;
 }
 

@@ -1,0 +1,17 @@
+name: Deploy to Fly.io
+
+on:
+  push:
+    branches: [ main ]    # change if you deploy from another branch
+  workflow_dispatch:      # lets you deploy from the Actions tab manually
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy
+        run: flyctl deploy --remote-only --app canvas-mcp
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

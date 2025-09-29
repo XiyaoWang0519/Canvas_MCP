@@ -10,7 +10,7 @@ import {
   Announcement,
   Assignment,
   Course,
-  File,
+  FileResource,
   Folder,
   SubmissionState,
   UpcomingItem
@@ -152,7 +152,7 @@ export function normalizePlannerItem(
   return undefined;
 }
 
-export function mapFile(raw: CanvasFile): File {
+export function mapFile(raw: CanvasFile): FileResource {
   return {
     id: raw.id,
     uuid: raw.uuid,

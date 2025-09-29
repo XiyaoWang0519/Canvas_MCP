@@ -87,7 +87,10 @@ export const fileSchema = z.object({
   mime_class: z.string().optional()
 });
 
-export type File = z.infer<typeof fileSchema>;
+export type FileResource = z.infer<typeof fileSchema>;
+
+/** @deprecated Use FileResource instead to avoid collision with built-in DOM File type */
+export type File = FileResource;
 
 export const folderSchema = z.object({
   id: z.number(),

@@ -68,3 +68,63 @@ export const listAnnouncementsOutputSchema = z.object({
 export const listUpcomingOutputSchema = z.object({
   upcoming: z.array(upcomingItemSchema)
 });
+
+export const fileSchema = z.object({
+  id: z.number(),
+  uuid: z.string().optional(),
+  folder_id: z.number().optional(),
+  display_name: z.string(),
+  filename: z.string(),
+  content_type: z.string().optional(),
+  url: z.string().optional(),
+  size: z.number().optional(),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
+  locked: z.boolean().optional(),
+  hidden: z.boolean().optional(),
+  locked_for_user: z.boolean().optional(),
+  thumbnail_url: z.string().nullable().optional(),
+  mime_class: z.string().optional()
+});
+
+export type File = z.infer<typeof fileSchema>;
+
+export const folderSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  full_name: z.string().optional(),
+  context_id: z.number().optional(),
+  context_type: z.string().optional(),
+  parent_folder_id: z.number().nullable().optional(),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
+  locked: z.boolean().optional(),
+  folders_count: z.number().optional(),
+  files_count: z.number().optional(),
+  hidden: z.boolean().optional(),
+  locked_for_user: z.boolean().optional(),
+  for_submissions: z.boolean().optional()
+});
+
+export type Folder = z.infer<typeof folderSchema>;
+
+export const listFilesOutputSchema = z.object({
+  files: z.array(fileSchema)
+});
+
+export const getFileOutputSchema = z.object({
+  file: fileSchema
+});
+
+export const getFileDownloadUrlOutputSchema = z.object({
+  file_id: z.number(),
+  download_url: z.string()
+});
+
+export const listFoldersOutputSchema = z.object({
+  folders: z.array(folderSchema)
+});
+
+export const getFolderOutputSchema = z.object({
+  folder: folderSchema
+});

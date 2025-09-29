@@ -65,3 +65,50 @@ export interface CanvasPlannerItem {
   };
   html_url?: string;
 }
+
+export interface CanvasFile {
+  id: number;
+  uuid?: string;
+  folder_id?: number;
+  display_name: string;
+  filename: string;
+  'content-type'?: string;
+  url?: string;
+  size?: number;
+  created_at?: string;
+  updated_at?: string;
+  unlock_at?: string | null;
+  locked?: boolean;
+  hidden?: boolean;
+  lock_at?: string | null;
+  hidden_for_user?: boolean;
+  thumbnail_url?: string | null;
+  modified_at?: string;
+  mime_class?: string;
+  media_entry_id?: string | null;
+  locked_for_user?: boolean;
+  lock_explanation?: string;
+}
+
+export interface CanvasFolder {
+  id: number;
+  name: string;
+  full_name?: string;
+  context_id?: number;
+  context_type?: string;
+  parent_folder_id?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  locked?: boolean;
+  folders_url?: string;
+  files_url?: string;
+  files_count?: number;
+  folders_count?: number;
+  hidden?: boolean;
+  locked_for_user?: boolean;
+  for_submissions?: boolean;
+}
+
+export interface CanvasFilePublicUrl {
+  public_url: string;
+}

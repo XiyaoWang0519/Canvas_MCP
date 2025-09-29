@@ -60,6 +60,31 @@ export function registerCanvasPrompts(server: McpServer): void {
     },
     (args) => buildAnnouncementDigestPrompt(args)
   );
+
+  const fileAccessArgs = {
+    course_hint: z
+      .string()
+      .trim()
+      .min(1)
+      .describe('Optional course identifier to scope file search.')
+      .optional(),
+    file_type: z
+      .string()
+      .trim()
+      .min(1)
+      .describe('Optional file type or extension hint (e.g. "pdf", "lecture notes", "syllabus").')
+      .optional()
+  } satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerPrompt(
+    'canvas.file_access',
+    {
+      title: 'File Access Guide',
+      description: 'Help the learner locate and access Canvas course files and documents.',
+      argsSchema: fileAccessArgs
+    },
+    (args) => buildFileAccessPrompt(args)
+  );
 }
 
 function buildQuickstartPrompt(): GetPromptResult {
@@ -72,14 +97,19 @@ function buildQuickstartPrompt(): GetPromptResult {
     '- `get_assignment`: drill into a single assignment for submission status or full details before advising.',
     '- `list_upcoming`: gather the near-term to-do list that Canvas surfaces across courses.',
     '- `list_announcements`: review announcements, optionally scoped to a single course or recent timeframe.',
+    '- `list_user_files`, `list_course_files`, `list_folder_files`: browse files in personal space, courses, or specific folders.',
+    '- `get_file`: retrieve detailed metadata for a specific file (name, size, type, lock status).',
+    '- `get_file_download_url`: obtain a temporary signed URL to download file content.',
+    '- `list_user_folders`, `list_course_folders`, `get_folder`: navigate folder structures and see file organization.',
     '',
     'Workflow:',
-    '1. Clarify the learner\'s goal (course, timeframe, task type) and ask follow-up questions when details are missing.',
+    '1. Clarify the learner\'s goal (course, timeframe, task type, file access) and ask follow-up questions when details are missing.',
     '2. Call `list_courses` early to translate human course references into Canvas IDs before using other tools.',
     '3. Fetch targeted data with the other tools, choosing date filters or search terms that match the learner\'s request.',
-    '4. Read tool results from `structuredContent` and combine them into a concise answer grouped by course and sorted by due date.',
-    '5. Highlight overdue or at-risk work, include Canvas links when present, and suggest next actions or follow-up tools when data is missing.',
-    '6. If no relevant data is found, state that clearly and recommend what the learner can try next (different filters, future check-ins, etc.).',
+    '4. For file requests, use folder tools to navigate structure first, then list/search files, and finally get download URLs when needed.',
+    '5. Read tool results from `structuredContent` and combine them into a concise answer grouped by course and sorted by due date.',
+    '6. Highlight overdue or at-risk work, include Canvas links when present, and suggest next actions or follow-up tools when data is missing.',
+    '7. If no relevant data is found, state that clearly and recommend what the learner can try next (different filters, future check-ins, etc.).',
     '',
     'Keep responses actionable and skimmable--use short paragraphs or bullet lists so the learner can plan quickly.'
   ]);
@@ -164,6 +194,54 @@ function buildAnnouncementDigestPrompt(args: {
 
   return {
     description: 'Guidance for assembling Canvas announcement summaries.',
+    messages: [toUserMessage(text)]
+  };
+}
+
+function buildFileAccessPrompt(args: {
+  course_hint?: string;
+  file_type?: string;
+}): GetPromptResult {
+  const courseHint = sanitize(args.course_hint);
+  const fileType = sanitize(args.file_type);
+
+  const courseLine = courseHint
+    ? `Focus on files from the course matching "${courseHint}". Use \`list_courses\` to identify the Canvas course ID and confirm with the learner if multiple matches exist.`
+    : 'If no course is specified, start by asking whether the learner wants to browse their personal files or course-specific files. Use `list_courses` to help them identify the right course.';
+
+  const fileTypeLine = fileType
+    ? `Filter for files related to "${fileType}". Use the search_term parameter to find matching filenames, or use content_types to filter by MIME type (e.g., "application/pdf" for PDFs, "image" for all images).`
+    : 'If no specific file type is mentioned, list all available files and let the learner browse or narrow down their search.';
+
+  const text = joinLines([
+    'Objective: help the learner find and access Canvas files efficiently.',
+    '',
+    courseLine,
+    fileTypeLine,
+    '',
+    'Recommended flow:',
+    '1. Clarify the scope: personal files (`list_user_files`) or course files (`list_course_files`)?',
+    '2. For course files, use `list_courses` to get the course ID, then call `list_course_folders` to show the folder structure.',
+    '3. Use `list_folder_files` to browse specific folders, or search directly with `list_course_files` using search_term or content_types filters.',
+    '4. When the learner identifies a file of interest, use `get_file` to show detailed metadata (size, upload date, lock status).',
+    '5. If the learner needs to download or view the file, call `get_file_download_url` to provide a temporary signed download link.',
+    '6. Explain that download URLs expire after 10 minutes and should be used immediately, not saved for later.',
+    '',
+    'File organization tips:',
+    '- Folders often mirror course structure (e.g., "Lectures", "Assignments", "Resources")',
+    '- Use content_types to filter: "application/pdf", "image/jpeg", "video/mp4", "application/vnd.openxmlformats-officedocument.*" for Office docs',
+    '- Sort by date (`created_at` or `updated_at`) to find recent uploads, or by `name` for alphabetical browsing',
+    '- Check `locked` and `hidden` fields to inform learners about file availability',
+    '',
+    'Common patterns:',
+    '- "Find the lecture slides" → search for PDFs or PowerPoint files with "lecture" or "slides" in the name',
+    '- "Show me all assignment files" → browse the Assignments folder or search for files with "assignment" in the name',
+    '- "What files were posted this week?" → filter by `created_at` or `updated_at` with recent dates',
+    '- "Download the syllabus" → search for "syllabus", get file details, then provide download URL'
+  ]);
+
+  return {
+    description: 'Playbook for helping learners locate and access Canvas files.',
     messages: [toUserMessage(text)]
   };
 }

@@ -7,15 +7,23 @@ import {
   CanvasAnnouncement,
   CanvasAssignment,
   CanvasCourse,
+  CanvasFile,
+  CanvasFilePublicUrl,
+  CanvasFolder,
   CanvasTodoItem
 } from '../canvas/types.js';
 import { AppError, unknownError } from '../core/errors.js';
 import { log, logToolEvent } from '../core/logger.js';
 import {
   getAssignmentOutputSchema,
+  getFileDownloadUrlOutputSchema,
+  getFileOutputSchema,
+  getFolderOutputSchema,
   listAnnouncementsOutputSchema,
   listAssignmentsOutputSchema,
   listCoursesOutputSchema,
+  listFilesOutputSchema,
+  listFoldersOutputSchema,
   listUpcomingOutputSchema,
   type Course
 } from './schemas.js';
@@ -23,6 +31,8 @@ import {
   mapAnnouncement,
   mapAssignment,
   mapCourse,
+  mapFile,
+  mapFolder,
   mapUpcomingFromAssignment
 } from './mappers.js';
 
@@ -188,6 +198,14 @@ export function registerCanvasTools(server: McpServer, deps: ToolDependencies): 
   registerGetAssignment(server, deps);
   registerListAnnouncements(server, deps);
   registerListUpcoming(server, deps);
+  registerListUserFiles(server, deps);
+  registerListCourseFiles(server, deps);
+  registerListFolderFiles(server, deps);
+  registerGetFile(server, deps);
+  registerGetFileDownloadUrl(server, deps);
+  registerListUserFolders(server, deps);
+  registerListCourseFolders(server, deps);
+  registerGetFolder(server, deps);
 }
 
 function registerListCourses(server: McpServer, deps: ToolDependencies): void {
@@ -567,4 +585,335 @@ function isWithinRange(
   }
 
   return timestamp >= start.getTime() && timestamp <= end.getTime();
+}
+
+function registerListUserFiles(server: McpServer, deps: ToolDependencies): void {
+  const inputSchema = {
+    search_term: z.string().optional(),
+    content_types: z.array(z.string()).optional(),
+    sort: z.enum(['name', 'size', 'created_at', 'updated_at', 'content_type']).optional(),
+    order: z.enum(['asc', 'desc']).optional()
+  } satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerTool(
+    'list_user_files',
+    {
+      title: 'List User Files',
+      description: 'List files in the authenticated user\'s personal files',
+      inputSchema,
+      outputSchema: listFilesOutputSchema.shape
+    },
+    wrapTool(
+      'list_user_files',
+      async (args: {
+        search_term?: string;
+        content_types?: string[];
+        sort?: 'name' | 'size' | 'created_at' | 'updated_at' | 'content_type';
+        order?: 'asc' | 'desc';
+      }) => {
+        const params: Record<string, unknown> = {};
+
+        if (args.search_term) {
+          params.search_term = args.search_term;
+        }
+        if (args.content_types && args.content_types.length > 0) {
+          params['content_types[]'] = args.content_types;
+        }
+        if (args.sort) {
+          params.sort = args.sort;
+        }
+        if (args.order) {
+          params.order = args.order;
+        }
+
+        const { data, status, requestId, requestIds } = await deps.canvas.getAll<CanvasFile>(
+          '/api/v1/users/self/files',
+          params
+        );
+
+        const files = data.map(mapFile);
+        const payload = listFilesOutputSchema.parse({ files });
+
+        return {
+          payload,
+          meta: { status, requestId, requestIds }
+        };
+      }
+    )
+  );
+}
+
+function registerListCourseFiles(server: McpServer, deps: ToolDependencies): void {
+  const inputSchema = {
+    course_id: z.number().int().nonnegative(),
+    search_term: z.string().optional(),
+    content_types: z.array(z.string()).optional(),
+    sort: z.enum(['name', 'size', 'created_at', 'updated_at', 'content_type']).optional(),
+    order: z.enum(['asc', 'desc']).optional()
+  } satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerTool(
+    'list_course_files',
+    {
+      title: 'List Course Files',
+      description: 'List files within a Canvas course',
+      inputSchema,
+      outputSchema: listFilesOutputSchema.shape
+    },
+    wrapTool(
+      'list_course_files',
+      async (args: {
+        course_id: number;
+        search_term?: string;
+        content_types?: string[];
+        sort?: 'name' | 'size' | 'created_at' | 'updated_at' | 'content_type';
+        order?: 'asc' | 'desc';
+      }) => {
+        const params: Record<string, unknown> = {};
+
+        if (args.search_term) {
+          params.search_term = args.search_term;
+        }
+        if (args.content_types && args.content_types.length > 0) {
+          params['content_types[]'] = args.content_types;
+        }
+        if (args.sort) {
+          params.sort = args.sort;
+        }
+        if (args.order) {
+          params.order = args.order;
+        }
+
+        const { data, status, requestId, requestIds } = await deps.canvas.getAll<CanvasFile>(
+          `/api/v1/courses/${args.course_id}/files`,
+          params
+        );
+
+        const files = data.map(mapFile);
+        const payload = listFilesOutputSchema.parse({ files });
+
+        return {
+          payload,
+          meta: { status, requestId, requestIds }
+        };
+      }
+    )
+  );
+}
+
+function registerListFolderFiles(server: McpServer, deps: ToolDependencies): void {
+  const inputSchema = {
+    folder_id: z.number().int().nonnegative(),
+    search_term: z.string().optional(),
+    content_types: z.array(z.string()).optional(),
+    sort: z.enum(['name', 'size', 'created_at', 'updated_at', 'content_type']).optional(),
+    order: z.enum(['asc', 'desc']).optional()
+  } satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerTool(
+    'list_folder_files',
+    {
+      title: 'List Folder Files',
+      description: 'List files within a specific folder',
+      inputSchema,
+      outputSchema: listFilesOutputSchema.shape
+    },
+    wrapTool(
+      'list_folder_files',
+      async (args: {
+        folder_id: number;
+        search_term?: string;
+        content_types?: string[];
+        sort?: 'name' | 'size' | 'created_at' | 'updated_at' | 'content_type';
+        order?: 'asc' | 'desc';
+      }) => {
+        const params: Record<string, unknown> = {};
+
+        if (args.search_term) {
+          params.search_term = args.search_term;
+        }
+        if (args.content_types && args.content_types.length > 0) {
+          params['content_types[]'] = args.content_types;
+        }
+        if (args.sort) {
+          params.sort = args.sort;
+        }
+        if (args.order) {
+          params.order = args.order;
+        }
+
+        const { data, status, requestId, requestIds } = await deps.canvas.getAll<CanvasFile>(
+          `/api/v1/folders/${args.folder_id}/files`,
+          params
+        );
+
+        const files = data.map(mapFile);
+        const payload = listFilesOutputSchema.parse({ files });
+
+        return {
+          payload,
+          meta: { status, requestId, requestIds }
+        };
+      }
+    )
+  );
+}
+
+function registerGetFile(server: McpServer, deps: ToolDependencies): void {
+  const inputSchema = {
+    file_id: z.number().int().nonnegative()
+  } satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerTool(
+    'get_file',
+    {
+      title: 'Get File',
+      description: 'Get detailed information about a specific file',
+      inputSchema,
+      outputSchema: getFileOutputSchema.shape
+    },
+    wrapTool('get_file', async (args: { file_id: number }) => {
+      const { data, status, requestId } = await deps.canvas.get<CanvasFile>(
+        `/api/v1/files/${args.file_id}`
+      );
+
+      const payload = getFileOutputSchema.parse({
+        file: mapFile(data)
+      });
+
+      return {
+        payload,
+        meta: { status, requestId }
+      };
+    })
+  );
+}
+
+function registerGetFileDownloadUrl(server: McpServer, deps: ToolDependencies): void {
+  const inputSchema = {
+    file_id: z.number().int().nonnegative(),
+    submission_id: z.number().int().nonnegative().optional()
+  } satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerTool(
+    'get_file_download_url',
+    {
+      title: 'Get File Download URL',
+      description:
+        'Get a temporary download URL for a file. The URL is signed and expires after a short time.',
+      inputSchema,
+      outputSchema: getFileDownloadUrlOutputSchema.shape
+    },
+    wrapTool(
+      'get_file_download_url',
+      async (args: { file_id: number; submission_id?: number }) => {
+        const params: Record<string, unknown> = {};
+
+        if (args.submission_id) {
+          params.submission_id = args.submission_id;
+        }
+
+        const { data, status, requestId } = await deps.canvas.get<CanvasFilePublicUrl>(
+          `/api/v1/files/${args.file_id}/public_url`,
+          params
+        );
+
+        const payload = getFileDownloadUrlOutputSchema.parse({
+          file_id: args.file_id,
+          download_url: data.public_url
+        });
+
+        return {
+          payload,
+          meta: { status, requestId }
+        };
+      }
+    )
+  );
+}
+
+function registerListUserFolders(server: McpServer, deps: ToolDependencies): void {
+  const inputSchema = {} satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerTool(
+    'list_user_folders',
+    {
+      title: 'List User Folders',
+      description: 'List all folders in the authenticated user\'s personal files',
+      inputSchema,
+      outputSchema: listFoldersOutputSchema.shape
+    },
+    wrapTool('list_user_folders', async () => {
+      const { data, status, requestId, requestIds } = await deps.canvas.getAll<CanvasFolder>(
+        '/api/v1/users/self/folders'
+      );
+
+      const folders = data.map(mapFolder);
+      const payload = listFoldersOutputSchema.parse({ folders });
+
+      return {
+        payload,
+        meta: { status, requestId, requestIds }
+      };
+    })
+  );
+}
+
+function registerListCourseFolders(server: McpServer, deps: ToolDependencies): void {
+  const inputSchema = {
+    course_id: z.number().int().nonnegative()
+  } satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerTool(
+    'list_course_folders',
+    {
+      title: 'List Course Folders',
+      description: 'List all folders within a Canvas course',
+      inputSchema,
+      outputSchema: listFoldersOutputSchema.shape
+    },
+    wrapTool('list_course_folders', async (args: { course_id: number }) => {
+      const { data, status, requestId, requestIds } = await deps.canvas.getAll<CanvasFolder>(
+        `/api/v1/courses/${args.course_id}/folders`
+      );
+
+      const folders = data.map(mapFolder);
+      const payload = listFoldersOutputSchema.parse({ folders });
+
+      return {
+        payload,
+        meta: { status, requestId, requestIds }
+      };
+    })
+  );
+}
+
+function registerGetFolder(server: McpServer, deps: ToolDependencies): void {
+  const inputSchema = {
+    folder_id: z.number().int().nonnegative()
+  } satisfies Record<string, z.ZodTypeAny>;
+
+  server.registerTool(
+    'get_folder',
+    {
+      title: 'Get Folder',
+      description: 'Get detailed information about a specific folder',
+      inputSchema,
+      outputSchema: getFolderOutputSchema.shape
+    },
+    wrapTool('get_folder', async (args: { folder_id: number }) => {
+      const { data, status, requestId } = await deps.canvas.get<CanvasFolder>(
+        `/api/v1/folders/${args.folder_id}`
+      );
+
+      const payload = getFolderOutputSchema.parse({
+        folder: mapFolder(data)
+      });
+
+      return {
+        payload,
+        meta: { status, requestId }
+      };
+    })
+  );
 }

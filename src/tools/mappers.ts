@@ -2,12 +2,16 @@ import {
   CanvasAnnouncement,
   CanvasAssignment,
   CanvasCourse,
+  CanvasFile,
+  CanvasFolder,
   CanvasSubmission
 } from '../canvas/types.js';
 import {
   Announcement,
   Assignment,
   Course,
+  FileResource,
+  Folder,
   SubmissionState,
   UpcomingItem
 } from './schemas.js';
@@ -146,4 +150,43 @@ export function normalizePlannerItem(
   }
 
   return undefined;
+}
+
+export function mapFile(raw: CanvasFile): FileResource {
+  return {
+    id: raw.id,
+    uuid: raw.uuid,
+    folder_id: raw.folder_id,
+    display_name: raw.display_name,
+    filename: raw.filename,
+    content_type: raw['content-type'],
+    url: raw.url,
+    size: raw.size,
+    created_at: raw.created_at,
+    updated_at: raw.updated_at,
+    locked: raw.locked,
+    hidden: raw.hidden,
+    locked_for_user: raw.locked_for_user,
+    thumbnail_url: raw.thumbnail_url,
+    mime_class: raw.mime_class
+  };
+}
+
+export function mapFolder(raw: CanvasFolder): Folder {
+  return {
+    id: raw.id,
+    name: raw.name,
+    full_name: raw.full_name,
+    context_id: raw.context_id,
+    context_type: raw.context_type,
+    parent_folder_id: raw.parent_folder_id,
+    created_at: raw.created_at,
+    updated_at: raw.updated_at,
+    locked: raw.locked,
+    folders_count: raw.folders_count,
+    files_count: raw.files_count,
+    hidden: raw.hidden,
+    locked_for_user: raw.locked_for_user,
+    for_submissions: raw.for_submissions
+  };
 }

@@ -17,6 +17,14 @@ Local Model Context Protocol (MCP) server that exposes Canvas LMS read-only tool
   - `get_assignment`
   - `list_announcements`
   - `list_upcoming`
+  - `list_user_files`
+  - `list_course_files`
+  - `list_folder_files`
+  - `get_file`
+  - `get_file_download_url`
+  - `list_user_folders`
+  - `list_course_folders`
+  - `get_folder`
 - JSON console logging with request metadata and Canvas status codes
 - Consistent MCP error mapping for Canvas 401/403/404/429/5xx responses
 - Pre-built MCP prompts for common Canvas workflows (quickstart, assignment planning, announcements)
@@ -77,6 +85,8 @@ By default the HTTP server listens on port `3333`. Override with `PORT=4000 npm 
 
 Each tool returns JSON via `structuredContent` (schema enforced with Zod).
 
+### Course & Assignment Tools
+
 | Tool | Input | Output |
 | ---- | ----- | ------ |
 | `list_courses` | `enrollment_state?: "active" \| "completed"`, `include_past?: boolean`, `limit?: number` | `{ courses: Course[] }` |
@@ -84,6 +94,19 @@ Each tool returns JSON via `structuredContent` (schema enforced with Zod).
 | `get_assignment` | `course_id: number`, `assignment_id: number` | `{ assignment: Assignment }` |
 | `list_announcements` | Optional `course_id`, optional `since` (ISO 8601) | `{ announcements: Announcement[] }` |
 | `list_upcoming` | Optional `days` (1-30, default 7) | `{ upcoming: UpcomingItem[] }` |
+
+### File & Folder Tools
+
+| Tool | Input | Output |
+| ---- | ----- | ------ |
+| `list_user_files` | Optional `search_term`, `content_types`, `sort`, `order` | `{ files: File[] }` |
+| `list_course_files` | `course_id: number`, optional `search_term`, `content_types`, `sort`, `order` | `{ files: File[] }` |
+| `list_folder_files` | `folder_id: number`, optional `search_term`, `content_types`, `sort`, `order` | `{ files: File[] }` |
+| `get_file` | `file_id: number` | `{ file: File }` |
+| `get_file_download_url` | `file_id: number`, optional `submission_id` | `{ file_id: number, download_url: string }` |
+| `list_user_folders` | _(none)_ | `{ folders: Folder[] }` |
+| `list_course_folders` | `course_id: number` | `{ folders: Folder[] }` |
+| `get_folder` | `folder_id: number` | `{ folder: Folder }` |
 
 Data contracts (stable):
 
@@ -114,17 +137,63 @@ Announcement {
 }
 
 UpcomingItem extends Assignment with { "source": "todo" | "assignment" }
+
+File {
+  "id": 1234,
+  "uuid": "abc123...",
+  "folder_id": 567,
+  "display_name": "Lecture Notes.pdf",
+  "filename": "lecture_notes.pdf",
+  "content_type": "application/pdf",
+  "url": "https://.../files/1234/download",
+  "size": 1048576, // bytes
+  "created_at": "2025-09-15T10:00:00Z",
+  "updated_at": "2025-09-15T10:00:00Z",
+  "locked": false,
+  "hidden": false,
+  "locked_for_user": false,
+  "thumbnail_url": null,
+  "mime_class": "pdf"
+}
+
+Folder {
+  "id": 567,
+  "name": "Lectures",
+  "full_name": "course files/Lectures",
+  "context_id": 123,
+  "context_type": "Course",
+  "parent_folder_id": 100,
+  "created_at": "2025-09-01T00:00:00Z",
+  "updated_at": "2025-09-15T00:00:00Z",
+  "locked": false,
+  "folders_count": 3,
+  "files_count": 15,
+  "hidden": false,
+  "locked_for_user": false,
+  "for_submissions": false
+}
 ```
 
 `list_upcoming` merges `/users/self/todo` and upcoming assignments (bucket filter) within the requested horizon, deduplicates by assignment id, and sorts by earliest due date.
+
+### File Download
+
+The `get_file_download_url` tool returns a temporary, signed URL that allows direct download of file content. This URL:
+- Is valid for a limited time (typically 10 minutes)
+- Includes authentication parameters in the URL (no additional headers needed)
+- Points directly to Canvas's file storage (usually AWS S3)
+- Should not be cached or stored long-term
+
+Use this tool when you need to access the actual file content. For file metadata only (name, size, type, etc.), use `get_file` instead.
 
 ## Prompt Reference
 
 | Prompt | Input | Purpose |
 | ------ | ----- | ------- |
-| `canvas.quickstart` | _(none)_ | Kick-off instructions that remind the model how to explore Canvas data safely with the available tools. |
+| `canvas.quickstart` | _(none)_ | Kick-off instructions that remind the model how to explore Canvas data safely with the available tools, including file access. |
 | `canvas.assignment_brief` | `course_hint?: string`, `days?: string (digits)` | Guides the model through gathering assignments and upcoming todo items for a specific course and time horizon. |
 | `canvas.announcement_digest` | `course_hint?: string`, `since?: string (ISO-8601)` | Helps the model compile a digest of recent announcements, optionally scoped to a course or timeframe. |
+| `canvas.file_access` | `course_hint?: string`, `file_type?: string` | Guides the model through locating, browsing, and accessing Canvas files. Includes tips on folder navigation, content type filtering, and download URL usage. |
 
 ## Logging & Errors
 
@@ -144,7 +213,9 @@ Each error includes `request_id` (Canvas `X-Request-Id`) and the last Canvas sta
 ## Testing
 
 - `npm run build` – type-checks & emits JS
-- `npm test` – placeholder (add integration tests under `tests/` as needed)
+- `./test-mcp-simple.sh` – quick functional test (stdio mode)
+- `node test-client.js` – full integration test (HTTP+SSE, requires server running)
+- See `TESTING.md` for comprehensive testing guide
 
 ## Next Steps
 

@@ -126,6 +126,13 @@ function createMcpServer(canvasClient: CanvasClient): McpServer {
 
   registerCanvasTools(server, { canvas: canvasClient });
   registerCanvasPrompts(server);
+
+  const previousOnInitialized = server.server.oninitialized;
+  server.server.oninitialized = () => {
+    previousOnInitialized?.();
+    server.sendToolListChanged();
+    server.sendPromptListChanged();
+  };
   return server;
 }
 

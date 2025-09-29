@@ -208,6 +208,27 @@ export function registerCanvasTools(server: McpServer, deps: ToolDependencies): 
   registerGetFolder(server, deps);
 }
 
+type FileToolCommonArgs = {
+  search_term?: string;
+  content_types?: string;
+  sort?: 'name' | 'size' | 'created_at' | 'updated_at' | 'content_type';
+  order?: 'asc' | 'desc';
+};
+
+function normalizeContentTypes(value: string | string[] | undefined): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const values = Array.isArray(value) ? value : value.split(',');
+
+  const normalized = values
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function registerListCourses(server: McpServer, deps: ToolDependencies): void {
   const inputSchema = {
     enrollment_state: z.enum(['active', 'completed']).optional(),
@@ -590,7 +611,13 @@ function isWithinRange(
 function registerListUserFiles(server: McpServer, deps: ToolDependencies): void {
   const inputSchema = {
     search_term: z.string().optional(),
-    content_types: z.array(z.string()).optional(),
+    content_types: z
+      .preprocess((value) => {
+        if (Array.isArray(value)) {
+          return value.join(',');
+        }
+        return value ?? undefined;
+      }, z.string().optional()),
     sort: z.enum(['name', 'size', 'created_at', 'updated_at', 'content_type']).optional(),
     order: z.enum(['asc', 'desc']).optional()
   } satisfies Record<string, z.ZodTypeAny>;
@@ -605,19 +632,15 @@ function registerListUserFiles(server: McpServer, deps: ToolDependencies): void 
     },
     wrapTool(
       'list_user_files',
-      async (args: {
-        search_term?: string;
-        content_types?: string[];
-        sort?: 'name' | 'size' | 'created_at' | 'updated_at' | 'content_type';
-        order?: 'asc' | 'desc';
-      }) => {
+      async (args: FileToolCommonArgs) => {
         const params: Record<string, unknown> = {};
 
         if (args.search_term) {
           params.search_term = args.search_term;
         }
-        if (args.content_types && args.content_types.length > 0) {
-          params['content_types[]'] = args.content_types;
+        const contentTypes = normalizeContentTypes(args.content_types);
+        if (contentTypes && contentTypes.length > 0) {
+          params['content_types[]'] = contentTypes;
         }
         if (args.sort) {
           params.sort = args.sort;
@@ -647,7 +670,13 @@ function registerListCourseFiles(server: McpServer, deps: ToolDependencies): voi
   const inputSchema = {
     course_id: z.number().int().nonnegative(),
     search_term: z.string().optional(),
-    content_types: z.array(z.string()).optional(),
+    content_types: z
+      .preprocess((value) => {
+        if (Array.isArray(value)) {
+          return value.join(',');
+        }
+        return value ?? undefined;
+      }, z.string().optional()),
     sort: z.enum(['name', 'size', 'created_at', 'updated_at', 'content_type']).optional(),
     order: z.enum(['asc', 'desc']).optional()
   } satisfies Record<string, z.ZodTypeAny>;
@@ -665,7 +694,7 @@ function registerListCourseFiles(server: McpServer, deps: ToolDependencies): voi
       async (args: {
         course_id: number;
         search_term?: string;
-        content_types?: string[];
+        content_types?: string;
         sort?: 'name' | 'size' | 'created_at' | 'updated_at' | 'content_type';
         order?: 'asc' | 'desc';
       }) => {
@@ -674,8 +703,9 @@ function registerListCourseFiles(server: McpServer, deps: ToolDependencies): voi
         if (args.search_term) {
           params.search_term = args.search_term;
         }
-        if (args.content_types && args.content_types.length > 0) {
-          params['content_types[]'] = args.content_types;
+        const contentTypes = normalizeContentTypes(args.content_types);
+        if (contentTypes && contentTypes.length > 0) {
+          params['content_types[]'] = contentTypes;
         }
         if (args.sort) {
           params.sort = args.sort;
@@ -705,7 +735,13 @@ function registerListFolderFiles(server: McpServer, deps: ToolDependencies): voi
   const inputSchema = {
     folder_id: z.number().int().nonnegative(),
     search_term: z.string().optional(),
-    content_types: z.array(z.string()).optional(),
+    content_types: z
+      .preprocess((value) => {
+        if (Array.isArray(value)) {
+          return value.join(',');
+        }
+        return value ?? undefined;
+      }, z.string().optional()),
     sort: z.enum(['name', 'size', 'created_at', 'updated_at', 'content_type']).optional(),
     order: z.enum(['asc', 'desc']).optional()
   } satisfies Record<string, z.ZodTypeAny>;
@@ -723,7 +759,7 @@ function registerListFolderFiles(server: McpServer, deps: ToolDependencies): voi
       async (args: {
         folder_id: number;
         search_term?: string;
-        content_types?: string[];
+        content_types?: string;
         sort?: 'name' | 'size' | 'created_at' | 'updated_at' | 'content_type';
         order?: 'asc' | 'desc';
       }) => {
@@ -732,8 +768,9 @@ function registerListFolderFiles(server: McpServer, deps: ToolDependencies): voi
         if (args.search_term) {
           params.search_term = args.search_term;
         }
-        if (args.content_types && args.content_types.length > 0) {
-          params['content_types[]'] = args.content_types;
+        const contentTypes = normalizeContentTypes(args.content_types);
+        if (contentTypes && contentTypes.length > 0) {
+          params['content_types[]'] = contentTypes;
         }
         if (args.sort) {
           params.sort = args.sort;

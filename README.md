@@ -99,9 +99,9 @@ Each tool returns JSON via `structuredContent` (schema enforced with Zod).
 
 | Tool | Input | Output |
 | ---- | ----- | ------ |
-| `list_user_files` | Optional `search_term`, `content_types`, `sort`, `order` | `{ files: File[] }` |
-| `list_course_files` | `course_id: number`, optional `search_term`, `content_types`, `sort`, `order` | `{ files: File[] }` |
-| `list_folder_files` | `folder_id: number`, optional `search_term`, `content_types`, `sort`, `order` | `{ files: File[] }` |
+| `list_user_files` | Optional `search_term`, `content_types` (comma-separated), `sort`, `order` | `{ files: File[] }` |
+| `list_course_files` | `course_id: number`, optional `search_term`, `content_types` (comma-separated), `sort`, `order` | `{ files: File[] }` |
+| `list_folder_files` | `folder_id: number`, optional `search_term`, `content_types` (comma-separated), `sort`, `order` | `{ files: File[] }` |
 | `get_file` | `file_id: number` | `{ file: File }` |
 | `get_file_download_url` | `file_id: number`, optional `submission_id` | `{ file_id: number, download_url: string }` |
 | `list_user_folders` | _(none)_ | `{ folders: Folder[] }` |

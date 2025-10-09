@@ -50,6 +50,7 @@ Required environment variables (see `.env.example`):
   - `CANVAS_PAT` (personal access token), **or**
   - OAuth2: `CANVAS_CLIENT_ID`, `CANVAS_CLIENT_SECRET`, `CANVAS_REFRESH_TOKEN` (+ optional `CANVAS_ACCESS_TOKEN`)
 - `MCP_BEARER` – shared secret for HTTP clients hitting `/mcp`
+- `CANVAS_TIMEZONE` – (optional) IANA timezone name for timestamp conversion (e.g. `America/Toronto`, `America/New_York`). Defaults to `UTC` if not set.
 
 ### Run the server
 

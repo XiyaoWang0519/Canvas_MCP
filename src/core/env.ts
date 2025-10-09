@@ -11,7 +11,19 @@ const envSchema = z
     CANVAS_CLIENT_SECRET: z.string().trim().optional(),
     CANVAS_ACCESS_TOKEN: z.string().trim().optional(),
     CANVAS_REFRESH_TOKEN: z.string().trim().optional(),
-    MCP_BEARER: z.string().trim().min(1, 'MCP_BEARER is required')
+    MCP_BEARER: z.string().trim().min(1, 'MCP_BEARER is required'),
+    CANVAS_TIMEZONE: z
+      .string()
+      .optional()
+      .transform((value) => value?.trim() || 'UTC')
+      .pipe(
+        z
+          .string()
+          .trim()
+          .refine((value) => isValidTimeZone(value), {
+            message: 'CANVAS_TIMEZONE must be a valid IANA time zone name.'
+          })
+      )
   })
   .superRefine((value, ctx) => {
     const hasPat = Boolean(value.CANVAS_PAT);
@@ -32,11 +44,21 @@ const envSchema = z
 
 export type AppEnv = z.infer<typeof envSchema> & {
   canvasBaseUrl: string;
+  canvasTimezone: string;
 };
 
+function isValidTimeZone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
 function normalizeBaseUrl(url: string): string {
-    const trimmed = url.trim();
-    return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  const trimmed = url.trim();
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
 }
 
 let cachedEnv: AppEnv | null = null;
@@ -56,8 +78,13 @@ export function loadEnv(): AppEnv {
 
   cachedEnv = {
     ...parsed.data,
-    canvasBaseUrl
+    canvasBaseUrl,
+    canvasTimezone: parsed.data.CANVAS_TIMEZONE
   };
 
   return cachedEnv;
+}
+
+export function resetEnvCacheForTesting(): void {
+  cachedEnv = null;
 }

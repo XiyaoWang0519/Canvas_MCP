@@ -15,6 +15,7 @@ import {
   SubmissionState,
   UpcomingItem
 } from './schemas.js';
+import { toCanvasTimezone } from '../core/timezone.js';
 
 function normalizeTerm(term?: string | null): string {
   return term?.trim() ?? '';
@@ -81,7 +82,7 @@ export function mapAssignment(raw: CanvasAssignment, source?: 'todo' | 'assignme
     id: raw.id,
     course_id: raw.course_id,
     name: raw.name,
-    due_at: raw.due_at ?? null,
+    due_at: toCanvasTimezone(raw.due_at) ?? null,
     points: typeof raw.points_possible === 'number' ? raw.points_possible : null,
     html_url: raw.html_url,
     submission_state: computeSubmissionState(raw.submission)
@@ -102,7 +103,7 @@ export function mapAnnouncement(raw: CanvasAnnouncement): Announcement {
     id: raw.id,
     course_id: ensureCourseId(raw.course_id, raw.context_code),
     title: raw.title,
-    posted_at: raw.posted_at,
+    posted_at: toCanvasTimezone(raw.posted_at) ?? raw.posted_at,
     html_url: raw.html_url
   };
 }
@@ -162,8 +163,8 @@ export function mapFile(raw: CanvasFile): FileResource {
     content_type: raw['content-type'],
     url: raw.url,
     size: raw.size,
-    created_at: raw.created_at,
-    updated_at: raw.updated_at,
+    created_at: toCanvasTimezone(raw.created_at) ?? raw.created_at,
+    updated_at: toCanvasTimezone(raw.updated_at) ?? raw.updated_at,
     locked: raw.locked,
     hidden: raw.hidden,
     locked_for_user: raw.locked_for_user,
@@ -180,8 +181,8 @@ export function mapFolder(raw: CanvasFolder): Folder {
     context_id: raw.context_id,
     context_type: raw.context_type,
     parent_folder_id: raw.parent_folder_id,
-    created_at: raw.created_at,
-    updated_at: raw.updated_at,
+    created_at: toCanvasTimezone(raw.created_at) ?? raw.created_at,
+    updated_at: toCanvasTimezone(raw.updated_at) ?? raw.updated_at,
     locked: raw.locked,
     folders_count: raw.folders_count,
     files_count: raw.files_count,

@@ -184,25 +184,27 @@ function classifyIpv4Address(hostname: string): string | undefined {
     return 'cloud metadata endpoint';
   }
 
+  // 0.0.0.0/8 ("this network")
   if (a === 0) {
     return 'unspecified IPv4 address';
   }
 
+  // 127.0.0.0/8
   if (a === 127) {
     return 'loopback address';
   }
 
-  if (a === 0) {
-    return 'unspecified/current-network address';
-  }
-
+  // 169.254.0.0/16
   if (a === 169 && b === 254) {
     return 'link-local address';
   }
 
+  // RFC1918 private ranges: 10/8, 172.16/12, 192.168/16
   if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
     return 'private RFC1918 address';
   }
+
+  return undefined;
 }
 
 function parseIpv6Address(hostname: string): bigint | undefined {
@@ -517,6 +519,66 @@ function inferExtension(url: string | undefined): string | undefined {
   } catch (error) {
     return undefined;
   }
+}
+
+function inferExtensionFromContentDisposition(contentDisposition: string | undefined): string | undefined {
+  if (!contentDisposition) {
+    return undefined;
+  }
+
+  const filenameMatch =
+    contentDisposition.match(/filename\*=UTF-8''([^;]+)/i) ??
+    contentDisposition.match(/filename\s*=\s*"?([^";]+)"?/i);
+
+  if (!filenameMatch) {
+    return undefined;
+  }
+
+  let filename = filenameMatch[1].trim();
+  if (!filename) {
+    return undefined;
+  }
+
+  try {
+    filename = decodeURIComponent(filename);
+  } catch (error) {
+    // Keep original value when decoding fails.
+  }
+
+  const extension = filename.includes('.')
+    ? filename.slice(filename.lastIndexOf('.') + 1).toLowerCase()
+    : '';
+
+  if (!extension || !DOWNLOAD_EXTENSIONS.has(extension)) {
+    return undefined;
+  }
+
+  return extension;
+}
+
+function responseLooksLikeDownload(response: Response, finalUrl: string): boolean {
+  const contentDisposition = response.headers.get('content-disposition')?.toLowerCase() ?? '';
+
+  if (contentDisposition.includes('attachment')) {
+    return true;
+  }
+
+  if (inferExtension(finalUrl)) {
+    return true;
+  }
+
+  return FILE_PATH_REGEX.test(finalUrl) || DOWNLOAD_QUERY_REGEX.test(finalUrl);
+}
+
+function classifyDirectLinkConfidence(
+  url: string,
+  ext: string | undefined
+): ExternalDownloadResolutionLink['confidence'] {
+  if (ext || FILE_PATH_REGEX.test(url) || DOWNLOAD_QUERY_REGEX.test(url)) {
+    return 'high';
+  }
+
+  return 'medium';
 }
 
 function classifyConfidence(input: {
@@ -937,7 +999,19 @@ export async function fetchExternalResource(
           };
         }
 
-        if (contentTypeLooksHtml(contentType) || !contentType) {
+        if (contentTypeLooksHtml(contentType)) {
+          const html = await response.text();
+
+          return {
+            requestedUrl,
+            finalUrl,
+            status: response.status,
+            contentType,
+            html
+          };
+        }
+
+        if (!contentType && !responseLooksLikeDownload(response, finalUrl)) {
           const html = await response.text();
 
           return {
@@ -951,11 +1025,14 @@ export async function fetchExternalResource(
 
         await cancelResponseBody(response);
 
-        const ext = inferExtension(finalUrl) ?? contentTypeToExtension(contentType);
+        const ext =
+          inferExtension(finalUrl) ??
+          inferExtensionFromContentDisposition(response.headers.get('content-disposition') ?? undefined) ??
+          contentTypeToExtension(contentType);
         const directLink: ExternalDownloadResolutionLink = {
           url: finalUrl,
           ext,
-          confidence: ext ? 'high' : 'medium'
+          confidence: classifyDirectLinkConfidence(finalUrl, ext)
         };
 
         return {

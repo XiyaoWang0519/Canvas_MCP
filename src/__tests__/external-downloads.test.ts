@@ -121,7 +121,7 @@ describe('external download helpers', () => {
     expect(second).toHaveLength(0);
   });
 
-  it('blocks localhost, private, and metadata endpoints from outbound fetches', () => {
+  it('blocks localhost, private, metadata, and unspecified addresses from outbound fetches', () => {
     expect(validateOutboundHttpUrl('http://localhost:3000/file', 'http://localhost:3000').allowed).toBe(
       false
     );
@@ -132,27 +132,89 @@ describe('external download helpers', () => {
       validateOutboundHttpUrl('http://169.254.169.254/latest/meta-data', 'http://169.254.169.254')
         .allowed
     ).toBe(false);
+    expect(validateOutboundHttpUrl('http://0.12.34.56/resource', 'http://0.12.34.56').allowed).toBe(
+      false
+    );
+    expect(validateOutboundHttpUrl('http://[::]/resource', 'http://[::]').allowed).toBe(false);
   });
 
-  it('cancels body and blocks when redirected to unsafe hosts', async () => {
+  it('cancels body and blocks redirect hops to unsafe hosts before following', async () => {
     const cancel = vi.fn(async () => undefined);
-    const redirected = {
-      status: 200,
-      ok: true,
-      url: 'http://169.254.169.254/latest/meta-data',
-      headers: new Headers({ 'content-type': 'text/html' }),
+    const redirectResponse = {
+      status: 302,
+      ok: false,
+      url: 'https://example.com/start',
+      headers: new Headers({ location: 'http://169.254.169.254/latest/meta-data' }),
       body: { cancel },
-      text: vi.fn(async () => 'metadata')
+      text: vi.fn(async () => '')
     } as unknown as Response;
+
+    const fetchImpl = vi.fn(async () => redirectResponse);
+    const dnsLookup = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]);
 
     const result = await fetchExternalResource(
       'https://example.com/start',
-      { timeoutMs: 2_000, maxRetries: 0 },
-      vi.fn(async () => redirected)
+      { timeoutMs: 2_000, maxRetries: 0, dnsLookup },
+      fetchImpl
     );
 
     expect(result.blockedReason).toContain('Blocked outbound URL target');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects hostnames that resolve to disallowed addresses', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch should not run when DNS resolves to blocked IPs');
+    });
+
+    const dnsLookup = vi.fn(async () => [
+      { address: '203.0.113.10', family: 4 },
+      { address: '127.0.0.1', family: 4 }
+    ]);
+
+    const result = await fetchExternalResource(
+      'https://evil.example/path',
+      { timeoutMs: 2_000, maxRetries: 0, dnsLookup },
+      fetchImpl
+    );
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result.blockedReason).toContain('hostname resolved to disallowed address 127.0.0.1');
+  });
+
+  it('maps OOXML content types to the correct extension', async () => {
+    const dnsLookup = vi.fn(async () => [{ address: '203.0.113.10', family: 4 }]);
+
+    const cases = [
+      {
+        contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        expected: 'pptx'
+      },
+      {
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        expected: 'xlsx'
+      },
+      {
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        expected: 'docx'
+      }
+    ] as const;
+
+    for (const testCase of cases) {
+      const result = await fetchExternalResource(
+        'https://downloads.example/download',
+        { timeoutMs: 2_000, maxRetries: 0, dnsLookup },
+        vi.fn(async () =>
+          new Response('binary', {
+            status: 200,
+            headers: { 'content-type': testCase.contentType }
+          })
+        )
+      );
+
+      expect(result.directLink?.ext).toBe(testCase.expected);
+    }
   });
 });
 

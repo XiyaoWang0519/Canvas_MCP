@@ -99,14 +99,14 @@ export interface CanvasFolder {
   parent_folder_id?: number | null;
   created_at?: string;
   updated_at?: string;
-  locked?: boolean;
+  locked?: boolean | null;
   folders_url?: string;
   files_url?: string;
   files_count?: number;
   folders_count?: number;
-  hidden?: boolean;
-  locked_for_user?: boolean;
-  for_submissions?: boolean;
+  hidden?: boolean | null;
+  locked_for_user?: boolean | null;
+  for_submissions?: boolean | null;
 }
 
 export interface CanvasFilePublicUrl {

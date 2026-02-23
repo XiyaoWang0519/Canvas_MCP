@@ -22,6 +22,11 @@ export interface CanvasAssignment {
   course_id: number;
   name: string;
   due_at?: string | null;
+  unlock_at?: string | null;
+  lock_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  description?: string | null;
   points_possible?: number | null;
   html_url: string;
   submission?: CanvasSubmission;
@@ -50,6 +55,66 @@ export interface CanvasTodoItem {
   assignment?: CanvasAssignment;
   html_url?: string;
   course_id?: number;
+}
+
+export interface CanvasPlannerItem {
+  context_type?: string;
+  course_id?: number;
+  plannable_id: number;
+  plannable_type: string;
+  plannable?: {
+    id: number;
+    title?: string;
+    due_at?: string | null;
+    html_url?: string;
+  };
+  html_url?: string;
+}
+
+export interface CanvasModule {
+  id: number;
+  name?: string;
+  position?: number;
+  unlock_at?: string | null;
+  require_sequential_progress?: boolean;
+  publish_final_grade?: boolean;
+  prerequisite_module_ids?: number[];
+  state?: string;
+  completed_at?: string | null;
+  items_count?: number;
+  items_url?: string;
+  published?: boolean;
+}
+
+export interface CanvasModuleItem {
+  id: number;
+  module_id?: number;
+  title?: string;
+  type: string;
+  content_id?: number;
+  html_url?: string;
+  url?: string;
+  page_url?: string;
+  external_url?: string;
+  published?: boolean;
+  locked?: boolean;
+}
+
+export interface CanvasPage {
+  page_id?: number;
+  url?: string;
+  title?: string;
+  body?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  hide_from_students?: boolean;
+  editing_roles?: string;
+  published?: boolean;
+  front_page?: boolean;
+  html_url?: string;
+  locked_for_user?: boolean;
+  lock_info?: unknown;
+  lock_explanation?: string;
 }
 
 export interface CanvasFile {

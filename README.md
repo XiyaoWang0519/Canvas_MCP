@@ -18,6 +18,8 @@ Local Model Context Protocol (MCP) server that exposes Canvas LMS read-only tool
   - `get_assignment`
   - `list_announcements`
   - `list_upcoming`
+  - `list_course_materials`
+  - `resolve_external_downloads`
   - `list_user_files`
   - `list_course_files`
   - `list_folder_files`
@@ -28,7 +30,7 @@ Local Model Context Protocol (MCP) server that exposes Canvas LMS read-only tool
   - `get_folder`
 - JSON console logging with request metadata and Canvas status codes
 - Consistent MCP error mapping for Canvas 401/403/404/429/5xx responses
-- Pre-built MCP prompts for common Canvas workflows (quickstart, assignment planning, announcements)
+- Pre-built MCP prompts for common Canvas workflows (quickstart, assignment planning, announcements, file/material discovery)
 
 ## Getting Started
 
@@ -105,6 +107,8 @@ Each tool returns JSON via `structuredContent` (schema enforced with Zod).
 | `get_assignment` | `course_id: number`, `assignment_id: number` | `{ assignment: Assignment }` |
 | `list_announcements` | Optional `course_id`, optional `since` (ISO 8601) | `{ announcements: Announcement[] }` |
 | `list_upcoming` | Optional `days` (1-30, default 7), optional `max_courses` (1-100) | `{ upcoming: UpcomingItem[] }` |
+| `list_course_materials` | `course_id: number`, optional `include_types` (`File\|Page\|Assignment\|Discussion\|Quiz\|ExternalUrl\|ExternalTool`), optional `include_html_link_extraction` (default `true`), optional `limit` (1-1000, default `200`) | `{ course_id, scanned_modules, scanned_items, materials: CourseMaterial[], truncated }` |
+| `resolve_external_downloads` | `course_id: number`, optional `material_keys: string[]`, optional `max_pages` (1-100, default `20`), optional `max_links_per_page` (1-200, default `50`), optional `timeout_ms` (2000-60000, default `15000`) | `{ course_id, processed_materials, results: ExternalResolutionResult[], total_links, truncated }` |
 
 ### File & Folder Tools
 
@@ -187,6 +191,16 @@ Folder {
 
 `list_upcoming` merges `/users/self/todo` and upcoming assignments (bucket filter) within the requested horizon, deduplicates by assignment id, and sorts by earliest due date. Use `max_courses` to cap the number of courses scanned for assignments.
 
+`list_course_materials` scans course modules + module items, deduplicates repeated resources while preserving per-module placement references, and enriches materials with item-specific data when available:
+- **File** items include file metadata plus a temporary `download_url`
+- **Page** items include page metadata plus a lightweight body snippet
+- **Assignment** items include due/date metadata and optional extracted API link references from assignment HTML
+- **ExternalUrl/ExternalTool** items include resolved target URLs
+
+Use this tool as the first step for course-content discovery before manual browsing or browser-based fallback.
+
+`resolve_external_downloads` is an API-first follow-up for external materials. It fetches ExternalUrl targets directly, attempts Canvas sessionless-launch resolution for ExternalTool items, extracts candidate downloadable links (absolute URLs + confidence + API hints), and reports when browser fallback is likely needed (`needs_browser_fallback`). It does not execute page JavaScript or authenticate to third-party systems.
+
 ### File Download
 
 The `get_file_download_url` tool returns a temporary, signed URL that allows direct download of file content. This URL:
@@ -201,10 +215,10 @@ Use this tool when you need to access the actual file content. For file metadata
 
 | Prompt | Input | Purpose |
 | ------ | ----- | ------- |
-| `canvas.quickstart` | _(none)_ | Kick-off instructions that remind the model how to explore Canvas data safely with the available tools, including file access. |
+| `canvas.quickstart` | _(none)_ | Kick-off instructions that remind the model how to explore Canvas data safely with the available tools, including module material and file access discovery. |
 | `canvas.assignment_brief` | `course_hint?: string`, `days?: string (digits)` | Guides the model through gathering assignments and upcoming todo items for a specific course and time horizon. |
 | `canvas.announcement_digest` | `course_hint?: string`, `since?: string (ISO-8601)` | Helps the model compile a digest of recent announcements, optionally scoped to a course or timeframe. |
-| `canvas.file_access` | `course_hint?: string`, `file_type?: string` | Guides the model through locating, browsing, and accessing Canvas files. Includes tips on folder navigation, content type filtering, and download URL usage. |
+| `canvas.file_access` | `course_hint?: string`, `file_type?: string` | Guides the model through locating, browsing, and accessing Canvas files. Includes `list_course_materials`-first discovery, folder navigation, content type filtering, and download URL usage. |
 
 ## Logging & Errors
 

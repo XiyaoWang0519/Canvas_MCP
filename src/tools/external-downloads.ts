@@ -1,3 +1,5 @@
+import { lookup } from 'node:dns/promises';
+import type { LookupAddress } from 'node:dns';
 import { isIP } from 'node:net';
 import { fetch, type Response } from 'undici';
 
@@ -64,11 +66,20 @@ export interface OutboundUrlValidationResult {
   reason?: string;
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 export type ExternalFetchLike = typeof fetch;
+
+export type DnsLookupLike = (
+  hostname: string,
+  options: { all: true; verbatim?: boolean }
+) => Promise<LookupAddress[]>;
 
 export interface ExternalFetchOptions {
   timeoutMs: number;
   maxRetries?: number;
+  maxRedirects?: number;
+  dnsLookup?: DnsLookupLike;
 }
 
 export interface ExternalFetchResult {
@@ -171,6 +182,10 @@ function classifyIpv4Address(hostname: string): string | undefined {
 
   if (METADATA_IP_ADDRESSES.has(hostname)) {
     return 'cloud metadata endpoint';
+  }
+
+  if (a === 0) {
+    return 'unspecified IPv4 address';
   }
 
   if (a === 127) {
@@ -287,6 +302,10 @@ function classifyIpv6Address(hostname: string): string | undefined {
     return 'cloud metadata endpoint';
   }
 
+  if (packed === 0n) {
+    return 'unspecified IPv6 address';
+  }
+
   if (packed === 1n) {
     return 'loopback address';
   }
@@ -377,6 +396,104 @@ export function validateOutboundHttpUrl(
       allowed: false,
       reason: 'Invalid URL.'
     };
+  }
+}
+
+async function validateHostnameResolution(
+  hostname: string,
+  dnsLookup: DnsLookupLike,
+  cache: Map<string, string | null>
+): Promise<string | undefined> {
+  const normalizedHostname = normalizeHostname(hostname);
+  if (!normalizedHostname || isIP(normalizedHostname) !== 0) {
+    return undefined;
+  }
+
+  if (cache.has(normalizedHostname)) {
+    const cached = cache.get(normalizedHostname);
+    return cached === null ? undefined : cached;
+  }
+
+  let resolved: LookupAddress[];
+  try {
+    resolved = await dnsLookup(normalizedHostname, { all: true, verbatim: true });
+  } catch (error) {
+    cache.set(normalizedHostname, null);
+    return undefined;
+  }
+
+  if (!resolved.length) {
+    cache.set(normalizedHostname, null);
+    return undefined;
+  }
+
+  for (const address of resolved) {
+    const normalizedAddress = normalizeHostname(address.address);
+    const blockedReason = classifyBlockedHost(normalizedAddress);
+    if (blockedReason) {
+      const reason = `hostname resolved to disallowed address ${normalizedAddress} (${blockedReason})`;
+      cache.set(normalizedHostname, reason);
+      return reason;
+    }
+  }
+
+  cache.set(normalizedHostname, null);
+  return undefined;
+}
+
+async function validateOutboundRequestUrl(
+  rawUrl: string,
+  baseUrl: string,
+  options: {
+    dnsLookup: DnsLookupLike;
+    dnsCache: Map<string, string | null>;
+  }
+): Promise<OutboundUrlValidationResult> {
+  const validation = validateOutboundHttpUrl(rawUrl, baseUrl);
+  if (!validation.allowed || !validation.normalizedUrl) {
+    return validation;
+  }
+
+  try {
+    const parsed = new URL(validation.normalizedUrl);
+    const dnsBlockedReason = await validateHostnameResolution(
+      parsed.hostname,
+      options.dnsLookup,
+      options.dnsCache
+    );
+
+    if (dnsBlockedReason) {
+      return {
+        allowed: false,
+        normalizedUrl: validation.normalizedUrl,
+        reason: `Blocked outbound URL target (${dnsBlockedReason}).`
+      };
+    }
+
+    return validation;
+  } catch (error) {
+    return {
+      allowed: false,
+      normalizedUrl: validation.normalizedUrl,
+      reason: 'Invalid URL.'
+    };
+  }
+}
+
+function isRedirectStatus(status: number): boolean {
+  return REDIRECT_STATUSES.has(status);
+}
+
+function resolveRedirectLocation(response: Response, requestUrl: string): string | undefined {
+  const location = response.headers.get('location');
+  if (!location) {
+    return undefined;
+  }
+
+  try {
+    return new URL(location, requestUrl).toString();
+  } catch (error) {
+    return undefined;
   }
 }
 
@@ -612,25 +729,47 @@ function contentTypeToExtension(contentType: string | undefined): string | undef
     return undefined;
   }
 
-  if (contentType.includes('pdf')) {
+  const normalized = contentType.toLowerCase();
+
+  if (normalized.includes('pdf')) {
     return 'pdf';
   }
-  if (contentType.includes('word') || contentType.includes('doc')) {
-    return 'docx';
-  }
-  if (contentType.includes('presentation') || contentType.includes('powerpoint')) {
-    return 'pptx';
-  }
-  if (contentType.includes('excel') || contentType.includes('spreadsheet')) {
+
+  if (
+    normalized.includes('spreadsheetml') ||
+    normalized.includes('ms-excel') ||
+    normalized.includes('excel') ||
+    normalized.includes('spreadsheet')
+  ) {
     return 'xlsx';
   }
-  if (contentType.includes('zip') || contentType.includes('compressed')) {
+
+  if (
+    normalized.includes('presentationml') ||
+    normalized.includes('ms-powerpoint') ||
+    normalized.includes('powerpoint') ||
+    normalized.includes('presentation')
+  ) {
+    return 'pptx';
+  }
+
+  if (
+    normalized.includes('wordprocessingml') ||
+    normalized.includes('msword') ||
+    normalized.includes('application/rtf') ||
+    normalized.includes('text/rtf') ||
+    normalized.includes('opendocument.text')
+  ) {
+    return 'docx';
+  }
+
+  if (normalized.includes('zip') || normalized.includes('compressed')) {
     return 'zip';
   }
-  if (contentType.includes('video/')) {
+  if (normalized.includes('video/')) {
     return 'mp4';
   }
-  if (contentType.includes('audio/')) {
+  if (normalized.includes('audio/')) {
     return 'mp3';
   }
 
@@ -652,8 +791,14 @@ export async function fetchExternalResource(
 ): Promise<ExternalFetchResult> {
   const timeoutMs = clamp(Math.floor(options.timeoutMs), 2_000, 60_000);
   const maxRetries = clamp(Math.floor(options.maxRetries ?? 2), 0, 5);
+  const maxRedirects = clamp(Math.floor(options.maxRedirects ?? 5), 0, 10);
+  const dnsLookupImpl = options.dnsLookup ?? lookup;
+  const dnsCache = new Map<string, string | null>();
 
-  const initialValidation = validateOutboundHttpUrl(url, url);
+  const initialValidation = await validateOutboundRequestUrl(url, url, {
+    dnsLookup: dnsLookupImpl,
+    dnsCache
+  });
   if (!initialValidation.allowed) {
     return {
       requestedUrl: url,
@@ -665,88 +810,162 @@ export async function fetchExternalResource(
   const requestedUrl = initialValidation.normalizedUrl ?? url;
   let lastError: unknown;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+  attemptLoop: for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const timeout = createTimeoutSignal(timeoutMs);
 
     try {
-      const response = await fetchImpl(requestedUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'User-Agent': USER_AGENT
-        },
-        signal: timeout.signal
-      });
+      let currentUrl = requestedUrl;
+      const seenRedirects = new Set<string>([requestedUrl]);
 
-      const responseUrl = response.url && response.url.length > 0 ? response.url : requestedUrl;
-      const finalValidation = validateOutboundHttpUrl(responseUrl, requestedUrl);
-      if (!finalValidation.allowed) {
-        await cancelResponseBody(response);
-
-        return {
-          requestedUrl,
-          finalUrl: finalValidation.normalizedUrl,
-          status: response.status,
-          error: finalValidation.reason ?? 'Blocked outbound URL target.',
-          blockedReason: finalValidation.reason ?? 'Blocked outbound URL target.'
-        };
-      }
-
-      const finalUrl = finalValidation.normalizedUrl ?? responseUrl;
-      const contentType = normalizeContentType(response);
-
-      if (isRetryableStatus(response.status) && attempt < maxRetries) {
-        await cancelResponseBody(response);
-        await sleep(retryDelayMs(attempt));
-        continue;
-      }
-
-      if (!response.ok) {
-        let bodyText: string | undefined;
-        if (contentTypeLooksHtml(contentType)) {
-          bodyText = await response.text();
-        } else {
-          await cancelResponseBody(response);
+      for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
+        const currentValidation = await validateOutboundRequestUrl(currentUrl, currentUrl, {
+          dnsLookup: dnsLookupImpl,
+          dnsCache
+        });
+        if (!currentValidation.allowed) {
+          return {
+            requestedUrl,
+            finalUrl: currentValidation.normalizedUrl ?? currentUrl,
+            error: currentValidation.reason ?? 'Blocked outbound URL target.',
+            blockedReason: currentValidation.reason ?? 'Blocked outbound URL target.'
+          };
         }
 
+        const safeCurrentUrl = currentValidation.normalizedUrl ?? currentUrl;
+
+        const response = await fetchImpl(safeCurrentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: {
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'User-Agent': USER_AGENT
+          },
+          signal: timeout.signal
+        });
+
+        if (isRedirectStatus(response.status)) {
+          const nextLocation = resolveRedirectLocation(response, safeCurrentUrl);
+          await cancelResponseBody(response);
+
+          if (!nextLocation) {
+            return {
+              requestedUrl,
+              finalUrl: safeCurrentUrl,
+              status: response.status,
+              error: 'Received redirect response without a valid Location header.'
+            };
+          }
+
+          const nextValidation = await validateOutboundRequestUrl(nextLocation, safeCurrentUrl, {
+            dnsLookup: dnsLookupImpl,
+            dnsCache
+          });
+          if (!nextValidation.allowed) {
+            return {
+              requestedUrl,
+              finalUrl: nextValidation.normalizedUrl ?? nextLocation,
+              status: response.status,
+              error: nextValidation.reason ?? 'Blocked outbound URL target.',
+              blockedReason: nextValidation.reason ?? 'Blocked outbound URL target.'
+            };
+          }
+
+          const nextUrl = nextValidation.normalizedUrl ?? nextLocation;
+          if (seenRedirects.has(nextUrl)) {
+            return {
+              requestedUrl,
+              finalUrl: nextUrl,
+              status: response.status,
+              error: 'Redirect loop detected.'
+            };
+          }
+
+          if (redirectCount >= maxRedirects) {
+            return {
+              requestedUrl,
+              finalUrl: nextUrl,
+              status: response.status,
+              error: `Too many redirects (max ${maxRedirects}).`
+            };
+          }
+
+          seenRedirects.add(nextUrl);
+          currentUrl = nextUrl;
+          continue;
+        }
+
+        const responseUrl = response.url && response.url.length > 0 ? response.url : safeCurrentUrl;
+        const finalValidation = await validateOutboundRequestUrl(responseUrl, safeCurrentUrl, {
+          dnsLookup: dnsLookupImpl,
+          dnsCache
+        });
+        if (!finalValidation.allowed) {
+          await cancelResponseBody(response);
+
+          return {
+            requestedUrl,
+            finalUrl: finalValidation.normalizedUrl ?? responseUrl,
+            status: response.status,
+            error: finalValidation.reason ?? 'Blocked outbound URL target.',
+            blockedReason: finalValidation.reason ?? 'Blocked outbound URL target.'
+          };
+        }
+
+        const finalUrl = finalValidation.normalizedUrl ?? responseUrl;
+        const contentType = normalizeContentType(response);
+
+        if (isRetryableStatus(response.status) && attempt < maxRetries) {
+          await cancelResponseBody(response);
+          await sleep(retryDelayMs(attempt));
+          continue attemptLoop;
+        }
+
+        if (!response.ok) {
+          let bodyText: string | undefined;
+          if (contentTypeLooksHtml(contentType)) {
+            bodyText = await response.text();
+          } else {
+            await cancelResponseBody(response);
+          }
+
+          return {
+            requestedUrl,
+            finalUrl,
+            status: response.status,
+            contentType,
+            html: bodyText
+          };
+        }
+
+        if (contentTypeLooksHtml(contentType) || !contentType) {
+          const html = await response.text();
+
+          return {
+            requestedUrl,
+            finalUrl,
+            status: response.status,
+            contentType,
+            html
+          };
+        }
+
+        await cancelResponseBody(response);
+
+        const ext = inferExtension(finalUrl) ?? contentTypeToExtension(contentType);
+        const directLink: ExternalDownloadResolutionLink = {
+          url: finalUrl,
+          ext,
+          confidence: ext ? 'high' : 'medium'
+        };
+
         return {
           requestedUrl,
           finalUrl,
           status: response.status,
           contentType,
-          html: bodyText
+          directLink
         };
       }
-
-      if (contentTypeLooksHtml(contentType) || !contentType) {
-        const html = await response.text();
-
-        return {
-          requestedUrl,
-          finalUrl,
-          status: response.status,
-          contentType,
-          html
-        };
-      }
-
-      await cancelResponseBody(response);
-
-      const ext = inferExtension(finalUrl) ?? contentTypeToExtension(contentType);
-      const directLink: ExternalDownloadResolutionLink = {
-        url: finalUrl,
-        ext,
-        confidence: ext ? 'high' : 'medium'
-      };
-
-      return {
-        requestedUrl,
-        finalUrl,
-        status: response.status,
-        contentType,
-        directLink
-      };
     } catch (error) {
       lastError = error;
 

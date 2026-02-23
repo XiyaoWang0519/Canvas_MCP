@@ -59,6 +59,7 @@ import {
   fetchExternalResource,
   finalizeResultStatus,
   toAbsoluteHttpUrl,
+  validateOutboundHttpUrl,
   type ExternalFetchLike
 } from './external-downloads.js';
 import { toCanvasTimezone } from '../core/timezone.js';
@@ -1129,33 +1130,61 @@ function getMaterialSourceUrl(material: CourseMaterial): string | undefined {
   return rawSource;
 }
 
-function parseLaunchUrl(payload: unknown, baseUrl: string): string | undefined {
+function getSessionlessLaunchBaseUrls(): string[] {
+  const candidates: string[] = [];
+
+  const canvasBase = process.env.CANVAS_BASE_URL;
+  if (canvasBase) {
+    const normalizedCanvasBase = toAbsoluteHttpUrl(canvasBase, canvasBase);
+    if (normalizedCanvasBase) {
+      candidates.push(normalizedCanvasBase);
+
+      try {
+        candidates.push(new URL(normalizedCanvasBase).origin);
+      } catch (error) {
+        // Ignore malformed base URL fallback.
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    candidates.push('https://canvas.invalid/');
+  }
+
+  return Array.from(new Set(candidates));
+}
+
+function parseLaunchUrl(payload: unknown, baseUrls: string[]): string | undefined {
+  const candidates: unknown[] = [];
+
   if (typeof payload === 'string') {
-    return toAbsoluteHttpUrl(payload, baseUrl);
+    candidates.push(payload);
+  } else if (payload && typeof payload === 'object') {
+    const value = payload as Record<string, unknown>;
+    candidates.push(
+      value.url,
+      value.launch_url,
+      value.sessionless_launch_url,
+      value.html_url,
+      value.target_link_uri
+    );
   }
-
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
-  }
-
-  const value = payload as Record<string, unknown>;
-
-  const candidates = [
-    value.url,
-    value.launch_url,
-    value.sessionless_launch_url,
-    value.html_url,
-    value.target_link_uri
-  ];
 
   for (const candidate of candidates) {
     if (typeof candidate !== 'string') {
       continue;
     }
 
-    const normalized = toAbsoluteHttpUrl(candidate, baseUrl);
-    if (normalized) {
-      return normalized;
+    const direct = toAbsoluteHttpUrl(candidate, candidate);
+    if (direct) {
+      return direct;
+    }
+
+    for (const baseUrl of baseUrls) {
+      const normalized = toAbsoluteHttpUrl(candidate, baseUrl);
+      if (normalized) {
+        return normalized;
+      }
     }
   }
 
@@ -1194,6 +1223,7 @@ async function resolveExternalToolLaunchUrl(args: {
   }
 
   let lastReason: string | undefined;
+  const launchBaseUrls = getSessionlessLaunchBaseUrls();
 
   for (const strategy of strategies) {
     try {
@@ -1203,7 +1233,7 @@ async function resolveExternalToolLaunchUrl(args: {
       );
       collectMeta(args.meta, launchResult);
 
-      const launchUrl = parseLaunchUrl(launchResult.data, sourceUrl ?? 'https://canvas.invalid/');
+      const launchUrl = parseLaunchUrl(launchResult.data, launchBaseUrls);
       if (launchUrl) {
         return { launchUrl };
       }
@@ -1307,10 +1337,42 @@ async function resolveExternalMaterialLinks(args: {
     baseResult.resolved_url = targetUrl;
   }
 
-  const fetched = await fetchExternalResource(targetUrl, {
+  const outboundValidation = validateOutboundHttpUrl(targetUrl, targetUrl);
+  if (!outboundValidation.allowed) {
+    return {
+      result: {
+        ...baseResult,
+        status: args.material.type === 'ExternalTool' ? 'needs_browser_fallback' : 'blocked',
+        source_url: sourceUrl,
+        resolved_url: outboundValidation.normalizedUrl ?? baseResult.resolved_url,
+        reason: outboundValidation.reason ?? 'Blocked outbound URL target.'
+      },
+      linksTruncated: false
+    };
+  }
+
+  const validatedTargetUrl = outboundValidation.normalizedUrl ?? targetUrl;
+  if (args.material.type === 'ExternalTool') {
+    baseResult.resolved_url = validatedTargetUrl;
+  }
+
+  const fetched = await fetchExternalResource(validatedTargetUrl, {
     timeoutMs: args.timeoutMs,
     maxRetries: 2
   }, args.deps.fetchImpl);
+
+  if (fetched.blockedReason) {
+    return {
+      result: {
+        ...baseResult,
+        status: args.material.type === 'ExternalTool' ? 'needs_browser_fallback' : 'blocked',
+        reason: fetched.blockedReason,
+        source_url: sourceUrl,
+        resolved_url: fetched.finalUrl ?? baseResult.resolved_url
+      },
+      linksTruncated: false
+    };
+  }
 
   if (fetched.error) {
     const status = args.material.type === 'ExternalTool' ? 'needs_browser_fallback' : 'error';
@@ -1358,7 +1420,7 @@ async function resolveExternalMaterialLinks(args: {
   }
 
   const extraction = extractExternalDownloadLinksFromHtml(fetched.html, {
-    baseUrl: fetched.finalUrl ?? targetUrl,
+    baseUrl: fetched.finalUrl ?? validatedTargetUrl,
     maxLinks: args.maxLinksPerPage
   });
 

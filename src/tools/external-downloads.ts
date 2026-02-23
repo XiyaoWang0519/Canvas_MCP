@@ -177,6 +177,10 @@ function classifyIpv4Address(hostname: string): string | undefined {
     return 'loopback address';
   }
 
+  if (a === 0) {
+    return 'unspecified/current-network address';
+  }
+
   if (a === 169 && b === 254) {
     return 'link-local address';
   }
@@ -184,8 +188,6 @@ function classifyIpv4Address(hostname: string): string | undefined {
   if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
     return 'private RFC1918 address';
   }
-
-  return undefined;
 }
 
 function parseIpv6Address(hostname: string): bigint | undefined {

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { fetch, type Response } from 'undici';
 
 import { sleep } from '../core/async.js';
@@ -40,6 +41,29 @@ const JAVASCRIPT_REQUIRED_REGEX =
 const LOGIN_GATE_REGEX =
   /\b(?:sign\s*in|log\s*in|single\s*sign[- ]?on|sso|authentication\s+required)\b/i;
 
+const METADATA_HOSTNAMES = new Set([
+  'metadata',
+  'metadata.google.internal',
+  'metadata.google.internal.',
+  'instance-data',
+  'instance-data.ec2.internal',
+  'metadata.aliyun.com'
+]);
+
+const METADATA_IP_ADDRESSES = new Set([
+  '169.254.169.254',
+  '100.100.100.200',
+  '192.0.0.192',
+  '169.254.170.2',
+  'fd00:ec2::254'
+]);
+
+export interface OutboundUrlValidationResult {
+  allowed: boolean;
+  normalizedUrl?: string;
+  reason?: string;
+}
+
 export type ExternalFetchLike = typeof fetch;
 
 export interface ExternalFetchOptions {
@@ -55,6 +79,7 @@ export interface ExternalFetchResult {
   html?: string;
   directLink?: ExternalDownloadResolutionLink;
   error?: string;
+  blockedReason?: string;
 }
 
 export interface ExtractLinksOptions {
@@ -104,6 +129,252 @@ export function toAbsoluteHttpUrl(
     return normalized.toString();
   } catch (error) {
     return undefined;
+  }
+}
+
+function normalizeHostname(hostname: string): string {
+  const withoutBrackets = hostname.replace(/^\[/, '').replace(/\]$/, '');
+  const lower = withoutBrackets.toLowerCase();
+  return lower.endsWith('.') ? lower.slice(0, -1) : lower;
+}
+
+function parseIpv4Octets(hostname: string): number[] | undefined {
+  const parts = hostname.split('.');
+  if (parts.length !== 4) {
+    return undefined;
+  }
+
+  const octets: number[] = [];
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) {
+      return undefined;
+    }
+
+    const value = Number(part);
+    if (!Number.isInteger(value) || value < 0 || value > 255) {
+      return undefined;
+    }
+
+    octets.push(value);
+  }
+
+  return octets;
+}
+
+function classifyIpv4Address(hostname: string): string | undefined {
+  const octets = parseIpv4Octets(hostname);
+  if (!octets) {
+    return undefined;
+  }
+
+  const [a, b] = octets;
+
+  if (METADATA_IP_ADDRESSES.has(hostname)) {
+    return 'cloud metadata endpoint';
+  }
+
+  if (a === 127) {
+    return 'loopback address';
+  }
+
+  if (a === 169 && b === 254) {
+    return 'link-local address';
+  }
+
+  if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)) {
+    return 'private RFC1918 address';
+  }
+
+  return undefined;
+}
+
+function parseIpv6Address(hostname: string): bigint | undefined {
+  const scoped = hostname.split('%')[0];
+  const [headRaw, tailRaw, extra] = scoped.split('::');
+  if (extra !== undefined) {
+    return undefined;
+  }
+
+  const parseSegmentList = (input: string): number[] | undefined => {
+    if (!input) {
+      return [];
+    }
+
+    const segments: number[] = [];
+    const tokens = input.split(':');
+
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (!token) {
+        return undefined;
+      }
+
+      if (token.includes('.')) {
+        if (index !== tokens.length - 1) {
+          return undefined;
+        }
+
+        const octets = parseIpv4Octets(token);
+        if (!octets) {
+          return undefined;
+        }
+
+        segments.push((octets[0] << 8) | octets[1]);
+        segments.push((octets[2] << 8) | octets[3]);
+        continue;
+      }
+
+      if (!/^[0-9a-f]{1,4}$/i.test(token)) {
+        return undefined;
+      }
+
+      const value = Number.parseInt(token, 16);
+      if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+        return undefined;
+      }
+
+      segments.push(value);
+    }
+
+    return segments;
+  };
+
+  const head = parseSegmentList(headRaw ?? '');
+  const tail = parseSegmentList(tailRaw ?? '');
+
+  if (!head || !tail) {
+    return undefined;
+  }
+
+  const hasCompression = scoped.includes('::');
+
+  let segments: number[];
+  if (hasCompression) {
+    const zerosToInsert = 8 - (head.length + tail.length);
+    if (zerosToInsert < 1) {
+      return undefined;
+    }
+
+    segments = [...head, ...new Array<number>(zerosToInsert).fill(0), ...tail];
+  } else {
+    segments = head;
+    if (segments.length !== 8) {
+      return undefined;
+    }
+  }
+
+  if (segments.length !== 8) {
+    return undefined;
+  }
+
+  let packed = 0n;
+  for (const segment of segments) {
+    packed = (packed << 16n) + BigInt(segment);
+  }
+
+  return packed;
+}
+
+function classifyIpv6Address(hostname: string): string | undefined {
+  const packed = parseIpv6Address(hostname);
+  if (packed === undefined) {
+    return undefined;
+  }
+
+  if (METADATA_IP_ADDRESSES.has(hostname)) {
+    return 'cloud metadata endpoint';
+  }
+
+  if (packed === 1n) {
+    return 'loopback address';
+  }
+
+  const firstHextet = Number((packed >> 112n) & 0xffffn);
+
+  if (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) {
+    return 'link-local address';
+  }
+
+  if (firstHextet >= 0xfc00 && firstHextet <= 0xfdff) {
+    return 'private IPv6 address';
+  }
+
+  const mappedPrefix = packed >> 32n;
+  if (mappedPrefix === 0xffffn) {
+    const mappedIpv4 = Number(packed & 0xffffffffn);
+    const octets = [
+      (mappedIpv4 >>> 24) & 0xff,
+      (mappedIpv4 >>> 16) & 0xff,
+      (mappedIpv4 >>> 8) & 0xff,
+      mappedIpv4 & 0xff
+    ];
+    const mapped = octets.join('.');
+    return classifyIpv4Address(mapped);
+  }
+
+  return undefined;
+}
+
+function classifyBlockedHost(hostname: string): string | undefined {
+  const normalized = normalizeHostname(hostname);
+
+  if (!normalized) {
+    return 'invalid host';
+  }
+
+  if (normalized === 'localhost' || normalized.endsWith('.localhost')) {
+    return 'localhost';
+  }
+
+  if (METADATA_HOSTNAMES.has(normalized)) {
+    return 'cloud metadata endpoint';
+  }
+
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 4) {
+    return classifyIpv4Address(normalized);
+  }
+
+  if (ipVersion === 6) {
+    return classifyIpv6Address(normalized);
+  }
+
+  return undefined;
+}
+
+export function validateOutboundHttpUrl(
+  rawUrl: string | undefined,
+  baseUrl: string
+): OutboundUrlValidationResult {
+  const normalizedUrl = toAbsoluteHttpUrl(rawUrl, baseUrl);
+  if (!normalizedUrl) {
+    return {
+      allowed: false,
+      reason: 'Invalid or unsupported URL protocol.'
+    };
+  }
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    const blockedHostReason = classifyBlockedHost(parsed.hostname);
+
+    if (blockedHostReason) {
+      return {
+        allowed: false,
+        normalizedUrl,
+        reason: `Blocked outbound URL target (${blockedHostReason}).`
+      };
+    }
+
+    return {
+      allowed: true,
+      normalizedUrl
+    };
+  } catch (error) {
+    return {
+      allowed: false,
+      reason: 'Invalid URL.'
+    };
   }
 }
 
@@ -364,6 +635,14 @@ function contentTypeToExtension(contentType: string | undefined): string | undef
   return undefined;
 }
 
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch (error) {
+    // Ignore cleanup errors.
+  }
+}
+
 export async function fetchExternalResource(
   url: string,
   options: ExternalFetchOptions,
@@ -372,21 +651,23 @@ export async function fetchExternalResource(
   const timeoutMs = clamp(Math.floor(options.timeoutMs), 2_000, 60_000);
   const maxRetries = clamp(Math.floor(options.maxRetries ?? 2), 0, 5);
 
-  const normalizedUrl = toAbsoluteHttpUrl(url, url);
-  if (!normalizedUrl) {
+  const initialValidation = validateOutboundHttpUrl(url, url);
+  if (!initialValidation.allowed) {
     return {
       requestedUrl: url,
-      error: 'Invalid or unsupported URL protocol.'
+      error: initialValidation.reason ?? 'Blocked outbound URL target.',
+      blockedReason: initialValidation.reason ?? 'Blocked outbound URL target.'
     };
   }
 
+  const requestedUrl = initialValidation.normalizedUrl ?? url;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const timeout = createTimeoutSignal(timeoutMs);
 
     try {
-      const response = await fetchImpl(normalizedUrl, {
+      const response = await fetchImpl(requestedUrl, {
         method: 'GET',
         redirect: 'follow',
         headers: {
@@ -396,19 +677,25 @@ export async function fetchExternalResource(
         signal: timeout.signal
       });
 
-      const responseUrl = response.url && response.url.length > 0 ? response.url : normalizedUrl;
-      const finalUrl = toAbsoluteHttpUrl(responseUrl, normalizedUrl);
-      if (!finalUrl) {
+      const responseUrl = response.url && response.url.length > 0 ? response.url : requestedUrl;
+      const finalValidation = validateOutboundHttpUrl(responseUrl, requestedUrl);
+      if (!finalValidation.allowed) {
+        await cancelResponseBody(response);
+
         return {
-          requestedUrl: normalizedUrl,
+          requestedUrl,
+          finalUrl: finalValidation.normalizedUrl,
           status: response.status,
-          error: 'Redirected to an unsupported URL protocol.'
+          error: finalValidation.reason ?? 'Blocked outbound URL target.',
+          blockedReason: finalValidation.reason ?? 'Blocked outbound URL target.'
         };
       }
 
+      const finalUrl = finalValidation.normalizedUrl ?? responseUrl;
       const contentType = normalizeContentType(response);
 
       if (isRetryableStatus(response.status) && attempt < maxRetries) {
+        await cancelResponseBody(response);
         await sleep(retryDelayMs(attempt));
         continue;
       }
@@ -417,10 +704,12 @@ export async function fetchExternalResource(
         let bodyText: string | undefined;
         if (contentTypeLooksHtml(contentType)) {
           bodyText = await response.text();
+        } else {
+          await cancelResponseBody(response);
         }
 
         return {
-          requestedUrl: normalizedUrl,
+          requestedUrl,
           finalUrl,
           status: response.status,
           contentType,
@@ -432,13 +721,15 @@ export async function fetchExternalResource(
         const html = await response.text();
 
         return {
-          requestedUrl: normalizedUrl,
+          requestedUrl,
           finalUrl,
           status: response.status,
           contentType,
           html
         };
       }
+
+      await cancelResponseBody(response);
 
       const ext = inferExtension(finalUrl) ?? contentTypeToExtension(contentType);
       const directLink: ExternalDownloadResolutionLink = {
@@ -448,7 +739,7 @@ export async function fetchExternalResource(
       };
 
       return {
-        requestedUrl: normalizedUrl,
+        requestedUrl,
         finalUrl,
         status: response.status,
         contentType,
@@ -468,7 +759,7 @@ export async function fetchExternalResource(
   }
 
   return {
-    requestedUrl: normalizedUrl,
+    requestedUrl,
     error: lastError instanceof Error ? lastError.message : 'Request failed.'
   };
 }

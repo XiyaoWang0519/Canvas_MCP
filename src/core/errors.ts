@@ -73,3 +73,22 @@ export function unknownError(
 ): AppError {
   return new AppError('UNKNOWN', message, 500, { details });
 }
+
+export function canvasTimeoutError(
+  timeoutMs: number,
+  url: string,
+  details?: Record<string, unknown>
+): AppError {
+  return new AppError(
+    'CANVAS_UNAVAILABLE',
+    `Canvas request timed out after ${timeoutMs}ms.`,
+    503,
+    {
+      details: {
+        timeoutMs,
+        url,
+        ...details
+      }
+    }
+  );
+}

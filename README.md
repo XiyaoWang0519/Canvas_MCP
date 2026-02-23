@@ -10,6 +10,7 @@ Local Model Context Protocol (MCP) server that exposes Canvas LMS read-only tool
   - Automatic bearer or OAuth2 token handling (refresh on 401)
   - Exponential backoff with jitter (up to 3 attempts) for 429/5xx
   - Link header pagination (`per_page=100`)
+  - Configurable request timeout (default 15s)
   - Request ID propagation for structured errors & logging
 - Tools returning strongly typed JSON payloads:
   - `list_courses`
@@ -51,6 +52,15 @@ Required environment variables (see `.env.example`):
   - OAuth2: `CANVAS_CLIENT_ID`, `CANVAS_CLIENT_SECRET`, `CANVAS_REFRESH_TOKEN` (+ optional `CANVAS_ACCESS_TOKEN`)
 - `MCP_BEARER` – shared secret for HTTP clients hitting `/mcp`
 - `CANVAS_TIMEZONE` – (optional) IANA timezone name for timestamp conversion (e.g. `America/Toronto`, `America/New_York`). Defaults to `UTC` if not set.
+- `CANVAS_HTTP_TIMEOUT_MS` – (optional) request timeout in milliseconds for Canvas HTTP calls. Defaults to `15000` and must be between `1000` and `120000`.
+- `MCP_RATE_LIMIT_WINDOW_MS` – rate limit window for `/mcp` (ms, default `60000`)
+- `MCP_RATE_LIMIT_MAX` – max `/mcp` requests per window (default `30`, set `0` to disable)
+- `MCP_MESSAGES_RATE_LIMIT_WINDOW_MS` – rate limit window for `/messages` (ms, default `60000`)
+- `MCP_MESSAGES_RATE_LIMIT_MAX` – max `/messages` requests per window (default `120`, set `0` to disable)
+- `MCP_SESSION_TTL_MS` – idle session TTL before cleanup (ms, default `900000`)
+- `MCP_SESSION_CLEANUP_INTERVAL_MS` – cleanup sweep interval (ms, default `60000`)
+- `MCP_MAX_SESSIONS` – optional cap for concurrent SSE sessions (unset to disable)
+- `MCP_SSE_HEARTBEAT_MS` – SSE keepalive interval (ms, default `25000`, set `0` to disable)
 
 ### Run the server
 
@@ -94,7 +104,7 @@ Each tool returns JSON via `structuredContent` (schema enforced with Zod).
 | `list_assignments` | `course_id: number`, optional `due_after`, `due_before` (ISO 8601), `search` | `{ assignments: Assignment[] }` |
 | `get_assignment` | `course_id: number`, `assignment_id: number` | `{ assignment: Assignment }` |
 | `list_announcements` | Optional `course_id`, optional `since` (ISO 8601) | `{ announcements: Announcement[] }` |
-| `list_upcoming` | Optional `days` (1-30, default 7) | `{ upcoming: UpcomingItem[] }` |
+| `list_upcoming` | Optional `days` (1-30, default 7), optional `max_courses` (1-100) | `{ upcoming: UpcomingItem[] }` |
 
 ### File & Folder Tools
 
@@ -175,7 +185,7 @@ Folder {
 }
 ```
 
-`list_upcoming` merges `/users/self/todo` and upcoming assignments (bucket filter) within the requested horizon, deduplicates by assignment id, and sorts by earliest due date.
+`list_upcoming` merges `/users/self/todo` and upcoming assignments (bucket filter) within the requested horizon, deduplicates by assignment id, and sorts by earliest due date. Use `max_courses` to cap the number of courses scanned for assignments.
 
 ### File Download
 
@@ -214,9 +224,8 @@ Each error includes `request_id` (Canvas `X-Request-Id`) and the last Canvas sta
 ## Testing
 
 - `npm run build` – type-checks & emits JS
-- `./test-mcp-simple.sh` – quick functional test (stdio mode)
-- `node test-client.js` – full integration test (HTTP+SSE, requires server running)
-- See `TESTING.md` for comprehensive testing guide
+- `npm test` – runs the Vitest suite
+- See `TESTING.md` for the full testing guide
 
 ## Next Steps
 

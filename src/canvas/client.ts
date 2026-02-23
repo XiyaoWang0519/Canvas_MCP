@@ -1,7 +1,7 @@
 import { fetch, type Response } from 'undici';
 
 import { sleep } from '../core/async.js';
-import { canvasError, unknownError } from '../core/errors.js';
+import { canvasError, canvasTimeoutError, unknownError } from '../core/errors.js';
 import { USER_AGENT } from '../core/meta.js';
 import {
   CanvasAuthStrategy,
@@ -17,6 +17,7 @@ export interface CanvasClientOptions {
   refreshToken?: string;
   maxRetries?: number;
   defaultPerPage?: number;
+  httpTimeoutMs?: number;
 }
 
 export interface CanvasRequestOptions {
@@ -35,11 +36,13 @@ export class CanvasClient {
   private readonly auth: CanvasAuthStrategy;
   private readonly maxRetries: number;
   private readonly defaultPerPage: number;
+  private readonly httpTimeoutMs: number;
 
   constructor(options: CanvasClientOptions) {
     this.baseUrl = options.baseUrl;
     this.maxRetries = options.maxRetries ?? 3;
     this.defaultPerPage = options.defaultPerPage ?? 100;
+    this.httpTimeoutMs = options.httpTimeoutMs ?? 15000;
 
     this.auth = createAuthStrategy({
       baseUrl: this.baseUrl,
@@ -150,10 +153,13 @@ export class CanvasClient {
     headers.set('User-Agent', USER_AGENT);
     headers.set('Authorization', await this.auth.getAuthorizationHeader());
 
+    const timeout = this.createTimeoutSignal(init.signal);
+
     try {
       const response = await fetch(url, {
         ...init,
-        headers
+        headers,
+        signal: timeout.signal
       });
 
       if (response.status === 401) {
@@ -170,12 +176,29 @@ export class CanvasClient {
 
       return response;
     } catch (error) {
+      if (isAbortError(error)) {
+        if (timeout.didTimeout) {
+          if (attempt < this.maxRetries) {
+            await sleep(this.retryDelay(attempt));
+            return this.fetchWithRetry(url, init, attempt + 1);
+          }
+
+          throw canvasTimeoutError(this.httpTimeoutMs, url.toString(), {
+            attempts: attempt + 1
+          });
+        }
+
+        throw error;
+      }
+
       if (attempt >= this.maxRetries) {
         throw error;
       }
 
       await sleep(this.retryDelay(attempt));
       return this.fetchWithRetry(url, init, attempt + 1);
+    } finally {
+      timeout.clear();
     }
   }
 
@@ -229,10 +252,61 @@ export class CanvasClient {
     const jitter = base * (0.5 + Math.random());
     return Math.min(5000, jitter);
   }
+
+  private createTimeoutSignal(parent?: AbortSignal): {
+    signal: AbortSignal;
+    didTimeout: boolean;
+    clear: () => void;
+  } {
+    const controller = new AbortController();
+    let didTimeout = false;
+    let timeoutId: NodeJS.Timeout | undefined;
+    let abortListener: (() => void) | undefined;
+
+    if (this.httpTimeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        didTimeout = true;
+        controller.abort();
+      }, this.httpTimeoutMs);
+    }
+
+    if (parent) {
+      if (parent.aborted) {
+        controller.abort(parent.reason);
+      } else {
+        abortListener = () => controller.abort(parent.reason);
+        parent.addEventListener('abort', abortListener, { once: true });
+      }
+    }
+
+    return {
+      signal: controller.signal,
+      get didTimeout() {
+        return didTimeout;
+      },
+      clear: () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        if (parent && abortListener) {
+          parent.removeEventListener('abort', abortListener);
+        }
+      }
+    };
+  }
 }
 
 function shouldRetry(status: number): boolean {
   return status === 429 || (status >= 500 && status < 600);
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const anyError = error as { name?: string; code?: string };
+  return anyError.name === 'AbortError' || anyError.code === 'UND_ERR_ABORTED';
 }
 
 function parseRetryAfter(header: string | null | undefined): number | null {

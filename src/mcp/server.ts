@@ -14,11 +14,29 @@ export interface HttpServerConfig {
   bearerToken: string;
   port: number;
   enableStdio?: boolean;
+  rateLimit?: {
+    mcp: RateLimitConfig;
+    messages: RateLimitConfig;
+  };
+  session?: {
+    ttlMs: number;
+    cleanupIntervalMs: number;
+    maxSessions?: number;
+    sseHeartbeatMs: number;
+  };
 }
 
 interface SessionTransport {
   transport: SSEServerTransport;
   server: McpServer;
+  createdAt: number;
+  lastSeen: number;
+  heartbeatTimer?: NodeJS.Timeout;
+}
+
+export interface RateLimitConfig {
+  windowMs: number;
+  max: number;
 }
 
 export async function startServer(config: HttpServerConfig): Promise<void> {
@@ -26,23 +44,56 @@ export async function startServer(config: HttpServerConfig): Promise<void> {
   app.use(express.json({ limit: '4mb' }));
 
   const sessions = new Map<string, SessionTransport>();
+  const rateLimitConfig = config.rateLimit ?? {
+    mcp: { windowMs: 60_000, max: 30 },
+    messages: { windowMs: 60_000, max: 120 }
+  };
+  const sessionConfig = config.session ?? {
+    ttlMs: 15 * 60_000,
+    cleanupIntervalMs: 60_000,
+    sseHeartbeatMs: 25_000
+  };
+  const mcpRateLimiter = createRateLimiter(rateLimitConfig.mcp, { name: 'mcp' });
+  const messagesRateLimiter = createRateLimiter(rateLimitConfig.messages, { name: 'messages' });
+  const cleanupTimer = startSessionCleanup(sessions, sessionConfig);
 
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true, service: APP_NAME, version: APP_VERSION });
   });
 
-  app.get('/mcp', async (req, res) => {
+  app.get('/mcp', mcpRateLimiter, async (req, res) => {
     if (!authorize(req, res, config.bearerToken)) {
+      return;
+    }
+
+    if (
+      typeof sessionConfig.maxSessions === 'number' &&
+      sessionConfig.maxSessions > 0 &&
+      sessions.size >= sessionConfig.maxSessions
+    ) {
+      res.status(429).json({ error: 'Too many active sessions' });
       return;
     }
 
     try {
       const transport = new SSEServerTransport('/messages', res);
       const server = createMcpServer(config.canvasClient);
+      const now = Date.now();
+      const session: SessionTransport = {
+        transport,
+        server,
+        createdAt: now,
+        lastSeen: now,
+        heartbeatTimer: startHeartbeat(res, sessionConfig.sseHeartbeatMs)
+      };
 
-      sessions.set(transport.sessionId, { transport, server });
+      sessions.set(transport.sessionId, session);
 
       transport.onclose = () => {
+        if (!sessions.has(transport.sessionId)) {
+          return;
+        }
+        clearHeartbeat(session);
         sessions.delete(transport.sessionId);
         log('info', 'SSE transport closed', { session_id: transport.sessionId });
       };
@@ -59,7 +110,7 @@ export async function startServer(config: HttpServerConfig): Promise<void> {
     }
   });
 
-  app.post('/messages', async (req, res) => {
+  app.post('/messages', messagesRateLimiter, async (req, res) => {
     if (!authorize(req, res, config.bearerToken)) {
       return;
     }
@@ -77,6 +128,7 @@ export async function startServer(config: HttpServerConfig): Promise<void> {
     }
 
     try {
+      session.lastSeen = Date.now();
       await session.transport.handlePostMessage(req, res, req.body);
     } catch (error) {
       log('error', 'Error handling /messages request', {
@@ -96,6 +148,7 @@ export async function startServer(config: HttpServerConfig): Promise<void> {
   const shutdown = async () => {
     log('info', 'Shutting down server', { active_sessions: sessions.size });
     serverInstance.close();
+    stopSessionCleanup(cleanupTimer);
 
     for (const [sessionId, { transport }] of sessions.entries()) {
       try {
@@ -158,4 +211,126 @@ function authorize(req: Request, res: Response, token: string): boolean {
   }
 
   return true;
+}
+
+function startHeartbeat(res: Response, heartbeatMs: number): NodeJS.Timeout | undefined {
+  if (!Number.isFinite(heartbeatMs) || heartbeatMs <= 0) {
+    return undefined;
+  }
+
+  const timer = setInterval(() => {
+    if (res.writableEnded) {
+      clearInterval(timer);
+      return;
+    }
+    res.write(`: keepalive ${Date.now()}\n\n`);
+  }, heartbeatMs);
+  timer.unref?.();
+  return timer;
+}
+
+function clearHeartbeat(session: SessionTransport): void {
+  if (session.heartbeatTimer) {
+    clearInterval(session.heartbeatTimer);
+  }
+}
+
+export function createRateLimiter(
+  config: RateLimitConfig,
+  options?: { keyFn?: (req: Request) => string; name?: string }
+): (req: Request, res: Response, next: () => void) => void {
+  const store = new Map<string, { count: number; resetAt: number }>();
+  const keyFn =
+    options?.keyFn ??
+    ((req: Request) => req.ip ?? req.socket.remoteAddress ?? 'unknown');
+
+  return (req: Request, res: Response, next: () => void) => {
+    if (!Number.isFinite(config.windowMs) || config.windowMs <= 0 || config.max <= 0) {
+      next();
+      return;
+    }
+
+    const key = keyFn(req);
+    const now = Date.now();
+    const existing = store.get(key);
+    if (!existing || now >= existing.resetAt) {
+      store.set(key, { count: 1, resetAt: now + config.windowMs });
+      next();
+      return;
+    }
+
+    existing.count += 1;
+    if (existing.count > config.max) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+      res.set('Retry-After', retryAfterSeconds.toString());
+      res.status(429).json({ error: 'Rate limit exceeded' });
+      return;
+    }
+
+    next();
+  };
+}
+
+export function getExpiredSessionIds(
+  sessions: Map<string, SessionTransport>,
+  ttlMs: number,
+  now: number
+): string[] {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+    return [];
+  }
+  const expired: string[] = [];
+  for (const [sessionId, session] of sessions.entries()) {
+    if (now - session.lastSeen >= ttlMs) {
+      expired.push(sessionId);
+    }
+  }
+  return expired;
+}
+
+function startSessionCleanup(
+  sessions: Map<string, SessionTransport>,
+  sessionConfig: NonNullable<HttpServerConfig['session']>
+): NodeJS.Timeout | undefined {
+  if (
+    !Number.isFinite(sessionConfig.cleanupIntervalMs) ||
+    sessionConfig.cleanupIntervalMs <= 0 ||
+    !Number.isFinite(sessionConfig.ttlMs) ||
+    sessionConfig.ttlMs <= 0
+  ) {
+    return undefined;
+  }
+
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const expiredSessionIds = getExpiredSessionIds(sessions, sessionConfig.ttlMs, now);
+    if (expiredSessionIds.length === 0) {
+      return;
+    }
+
+    for (const sessionId of expiredSessionIds) {
+      const session = sessions.get(sessionId);
+      if (!session) {
+        continue;
+      }
+      clearHeartbeat(session);
+      sessions.delete(sessionId);
+      void session.transport.close().catch((error) => {
+        log('error', 'Failed to close expired SSE transport', {
+          session_id: sessionId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+      log('info', 'Expired SSE session cleaned up', { session_id: sessionId });
+    }
+  }, sessionConfig.cleanupIntervalMs);
+
+  timer.unref?.();
+  return timer;
+}
+
+function stopSessionCleanup(timer: NodeJS.Timeout | undefined): void {
+  if (timer) {
+    clearInterval(timer);
+  }
 }

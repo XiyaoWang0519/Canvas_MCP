@@ -12,7 +12,8 @@ async function main(): Promise<void> {
     clientId: env.CANVAS_CLIENT_ID,
     clientSecret: env.CANVAS_CLIENT_SECRET,
     accessToken: env.CANVAS_ACCESS_TOKEN,
-    refreshToken: env.CANVAS_REFRESH_TOKEN
+    refreshToken: env.CANVAS_REFRESH_TOKEN,
+    httpTimeoutMs: env.canvasHttpTimeoutMs
   });
 
   const port = parsePort(process.env.PORT) ?? 3333;
@@ -24,7 +25,23 @@ async function main(): Promise<void> {
     canvasClient: client,
     bearerToken: env.MCP_BEARER,
     port,
-    enableStdio
+    enableStdio,
+    rateLimit: {
+      mcp: {
+        windowMs: env.MCP_RATE_LIMIT_WINDOW_MS,
+        max: env.MCP_RATE_LIMIT_MAX
+      },
+      messages: {
+        windowMs: env.MCP_MESSAGES_RATE_LIMIT_WINDOW_MS,
+        max: env.MCP_MESSAGES_RATE_LIMIT_MAX
+      }
+    },
+    session: {
+      ttlMs: env.MCP_SESSION_TTL_MS,
+      cleanupIntervalMs: env.MCP_SESSION_CLEANUP_INTERVAL_MS,
+      maxSessions: env.MCP_MAX_SESSIONS,
+      sseHeartbeatMs: env.MCP_SSE_HEARTBEAT_MS
+    }
   });
 }
 

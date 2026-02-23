@@ -16,6 +16,7 @@ beforeEach(() => {
   process.env.MCP_BEARER = 'test-bearer';
   process.env.CANVAS_PAT = 'test-pat';
   delete process.env.CANVAS_TIMEZONE;
+  delete process.env.CANVAS_HTTP_TIMEOUT_MS;
 });
 
 afterEach(() => {
@@ -31,12 +32,28 @@ describe('loadEnv', () => {
     expect(env.canvasTimezone).toBe('UTC');
   });
 
+  it('defaults CANVAS_HTTP_TIMEOUT_MS to 15000 when unset', async () => {
+    const envModule = await import('../core/env.js');
+    envModule.resetEnvCacheForTesting();
+    const env = envModule.loadEnv();
+    expect(env.canvasHttpTimeoutMs).toBe(15000);
+  });
+
   it('throws for invalid CANVAS_TIMEZONE', async () => {
     process.env.CANVAS_TIMEZONE = 'Invalid/Zone';
     const envModule = await import('../core/env.js');
     envModule.resetEnvCacheForTesting();
     expect(() => envModule.loadEnv()).toThrowError(
       /CANVAS_TIMEZONE must be a valid IANA time zone name\./
+    );
+  });
+
+  it('throws for invalid CANVAS_HTTP_TIMEOUT_MS', async () => {
+    process.env.CANVAS_HTTP_TIMEOUT_MS = '500';
+    const envModule = await import('../core/env.js');
+    envModule.resetEnvCacheForTesting();
+    expect(() => envModule.loadEnv()).toThrowError(
+      /CANVAS_HTTP_TIMEOUT_MS/
     );
   });
 });

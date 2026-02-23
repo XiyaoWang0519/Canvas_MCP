@@ -169,9 +169,9 @@ export function mapFile(raw: CanvasFile): FileResource {
     size: raw.size,
     created_at: toCanvasTimezone(raw.created_at) ?? raw.created_at,
     updated_at: toCanvasTimezone(raw.updated_at) ?? raw.updated_at,
-    locked: raw.locked,
-    hidden: raw.hidden,
-    locked_for_user: raw.locked_for_user,
+    locked: asBooleanOrUndefined(raw.locked),
+    hidden: asBooleanOrUndefined(raw.hidden),
+    locked_for_user: asBooleanOrUndefined(raw.locked_for_user),
     thumbnail_url: raw.thumbnail_url,
     mime_class: raw.mime_class
   };

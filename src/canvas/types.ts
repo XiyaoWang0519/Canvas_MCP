@@ -78,15 +78,15 @@ export interface CanvasFile {
   created_at?: string;
   updated_at?: string;
   unlock_at?: string | null;
-  locked?: boolean;
-  hidden?: boolean;
+  locked?: boolean | null;
+  hidden?: boolean | null;
   lock_at?: string | null;
-  hidden_for_user?: boolean;
+  hidden_for_user?: boolean | null;
   thumbnail_url?: string | null;
   modified_at?: string;
   mime_class?: string;
   media_entry_id?: string | null;
-  locked_for_user?: boolean;
+  locked_for_user?: boolean | null;
   lock_explanation?: string;
 }
 

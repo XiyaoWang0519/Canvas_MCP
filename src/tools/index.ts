@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 
-import { CanvasClient } from '../canvas/client.js';
+import { CanvasClient, type CanvasResult } from '../canvas/client.js';
 import {
   CanvasAnnouncement,
   CanvasAssignment,
@@ -563,7 +563,14 @@ function registerListUpcoming(server: McpServer, deps: ToolDependencies): void {
       const courses = coursesResult.data.slice(0, maxCourses);
       const limitAssignments = createConcurrencyLimiter(UPCOMING_ASSIGNMENT_CONCURRENCY);
 
-      const assignmentResults = await Promise.all(
+      type AssignmentSuccess = {
+        course: CanvasCourse;
+        assignmentsResult: CanvasResult<CanvasAssignment[]>;
+      };
+      type AssignmentFailure = { course: CanvasCourse; error: unknown; isAuthFailure: boolean };
+      type AssignmentFetchResult = AssignmentSuccess | AssignmentFailure;
+
+      const assignmentResults: AssignmentFetchResult[] = await Promise.all(
         courses.map((course) =>
           limitAssignments(async () => {
             try {
@@ -577,13 +584,15 @@ function registerListUpcoming(server: McpServer, deps: ToolDependencies): void {
 
               return { course, assignmentsResult };
             } catch (error) {
-              if (error instanceof AppError && error.code === 'AUTHORIZATION_FAILED') {
+              const isAuthFailure =
+                error instanceof AppError && error.code === 'AUTHORIZATION_FAILED';
+              if (isAuthFailure) {
                 log(
                   'warn',
                   'Skipping course for upcoming assignments due to authorization error',
                   { course_id: course.id }
                 );
-                return null;
+                return { course, error, isAuthFailure };
               }
 
               log('warn', 'Skipping course for upcoming assignments due to error', {
@@ -591,18 +600,28 @@ function registerListUpcoming(server: McpServer, deps: ToolDependencies): void {
                 error: error instanceof Error ? error.message : String(error),
                 code: error instanceof AppError ? error.code : undefined
               });
-              return null;
+              return { course, error, isAuthFailure: false };
             }
           })
         )
       );
 
+      let assignmentSuccessCount = 0;
+      let assignmentAuthFailureCount = 0;
+      let assignmentNonAuthFailureCount = 0;
+
       for (const result of assignmentResults) {
-        if (!result) {
+        if (!('assignmentsResult' in result)) {
+          if (result?.isAuthFailure) {
+            assignmentAuthFailureCount += 1;
+          } else if (result) {
+            assignmentNonAuthFailureCount += 1;
+          }
           continue;
         }
 
         const { course, assignmentsResult } = result;
+        assignmentSuccessCount += 1;
 
         if (assignmentsResult.requestIds) {
           metaRequestIds.push(...assignmentsResult.requestIds);
@@ -626,6 +645,28 @@ function registerListUpcoming(server: McpServer, deps: ToolDependencies): void {
             upcomingMap.set(mapped.id, mapped);
           }
         }
+      }
+
+      if (courses.length > 0 && assignmentSuccessCount === 0) {
+        const details = {
+          courseCount: courses.length,
+          authFailures: assignmentAuthFailureCount,
+          nonAuthFailures: assignmentNonAuthFailureCount
+        };
+        if (assignmentNonAuthFailureCount > 0) {
+          throw new AppError(
+            'CANVAS_UNAVAILABLE',
+            'Failed to fetch upcoming assignments for all courses.',
+            503,
+            { details }
+          );
+        }
+        throw new AppError(
+          'AUTHORIZATION_FAILED',
+          'Authorization failed for all courses when fetching assignments.',
+          403,
+          { details }
+        );
       }
 
       const upcoming = Array.from(upcomingMap.values()).sort((a, b) => {

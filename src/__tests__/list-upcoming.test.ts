@@ -199,4 +199,49 @@ describe('list_upcoming', () => {
     expect(canvas.getAll.mock.calls.some(([path]) => path === '/api/v1/courses/2/assignments'))
       .toBe(true);
   });
+
+  it('throws when all assignment fetches fail with non-auth errors', async () => {
+    const canvas = {
+      getAll: vi.fn(async (path: string) => {
+        if (path === '/api/v1/users/self/todo') {
+          return {
+            data: [],
+            status: 200,
+            requestId: 'todo'
+          };
+        }
+
+        if (path === '/api/v1/users/self/courses') {
+          return {
+            data: [
+              { id: 1, name: 'Course 1' },
+              { id: 2, name: 'Course 2' }
+            ],
+            status: 200,
+            requestId: 'courses'
+          };
+        }
+
+        if (path === '/api/v1/courses/1/assignments') {
+          throw new AppError('CANVAS_UNAVAILABLE', 'Canvas down', 503, {
+            canvasStatus: 503
+          });
+        }
+
+        if (path === '/api/v1/courses/2/assignments') {
+          throw new AppError('CANVAS_UNAVAILABLE', 'Canvas down', 503, {
+            canvasStatus: 503
+          });
+        }
+
+        throw new Error(`Unexpected path ${path}`);
+      })
+    };
+
+    const handler = await loadListUpcomingHandler(canvas);
+
+    await expect(handler({ days: 7 })).rejects.toThrow(
+      'Failed to fetch upcoming assignments for all courses.'
+    );
+  });
 });

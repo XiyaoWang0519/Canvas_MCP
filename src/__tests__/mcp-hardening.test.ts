@@ -50,6 +50,35 @@ describe('createRateLimiter', () => {
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.status).not.toHaveBeenCalled();
   });
+
+  it('prunes expired entries on the next request', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T00:00:00Z'));
+    const store = new Map<string, { count: number; resetAt: number }>();
+    const limiter = createRateLimiter(
+      { windowMs: 1_000, max: 1 },
+      {
+        store,
+        keyFn: (req) => req.ip ?? req.socket.remoteAddress ?? 'unknown'
+      }
+    );
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+      set: vi.fn().mockReturnThis()
+    } as any;
+    const next = vi.fn();
+
+    limiter({ ip: '1.1.1.1', socket: { remoteAddress: '1.1.1.1' } } as any, res, next);
+    limiter({ ip: '2.2.2.2', socket: { remoteAddress: '2.2.2.2' } } as any, res, next);
+    expect(store.size).toBe(2);
+
+    vi.setSystemTime(new Date('2025-01-01T00:00:02Z'));
+    limiter({ ip: '3.3.3.3', socket: { remoteAddress: '3.3.3.3' } } as any, res, next);
+
+    expect(store.size).toBe(1);
+    vi.useRealTimers();
+  });
 });
 
 describe('getExpiredSessionIds', () => {

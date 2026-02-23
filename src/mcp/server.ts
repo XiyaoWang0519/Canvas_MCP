@@ -237,12 +237,17 @@ function clearHeartbeat(session: SessionTransport): void {
 
 export function createRateLimiter(
   config: RateLimitConfig,
-  options?: { keyFn?: (req: Request) => string; name?: string }
+  options?: {
+    keyFn?: (req: Request) => string;
+    name?: string;
+    store?: Map<string, { count: number; resetAt: number }>;
+  }
 ): (req: Request, res: Response, next: () => void) => void {
-  const store = new Map<string, { count: number; resetAt: number }>();
+  const store = options?.store ?? new Map<string, { count: number; resetAt: number }>();
   const keyFn =
     options?.keyFn ??
     ((req: Request) => req.ip ?? req.socket.remoteAddress ?? 'unknown');
+  let nextPruneAt = Date.now() + config.windowMs;
 
   return (req: Request, res: Response, next: () => void) => {
     if (!Number.isFinite(config.windowMs) || config.windowMs <= 0 || config.max <= 0) {
@@ -252,6 +257,14 @@ export function createRateLimiter(
 
     const key = keyFn(req);
     const now = Date.now();
+    if (now >= nextPruneAt) {
+      for (const [entryKey, entry] of store.entries()) {
+        if (now >= entry.resetAt) {
+          store.delete(entryKey);
+        }
+      }
+      nextPruneAt = now + config.windowMs;
+    }
     const existing = store.get(key);
     if (!existing || now >= existing.resetAt) {
       store.set(key, { count: 1, resetAt: now + config.windowMs });

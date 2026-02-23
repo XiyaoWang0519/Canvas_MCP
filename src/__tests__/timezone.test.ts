@@ -136,7 +136,6 @@ describe('mappers', () => {
     expect(file.hidden).toBeUndefined();
     expect(file.locked_for_user).toBeUndefined();
   });
-
   it('normalizes nullable folder booleans from Canvas', async () => {
     const envModule = await import('../core/env.js');
     envModule.resetEnvCacheForTesting();

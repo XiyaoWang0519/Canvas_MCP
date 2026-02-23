@@ -121,21 +121,22 @@ describe('external download helpers', () => {
     expect(second).toHaveLength(0);
   });
 
-  it('blocks localhost, private, metadata, and unspecified addresses from outbound fetches', () => {
-    expect(validateOutboundHttpUrl('http://localhost:3000/file', 'http://localhost:3000').allowed).toBe(
-      false
-    );
-    expect(validateOutboundHttpUrl('http://10.0.0.20/report', 'http://10.0.0.20').allowed).toBe(
-      false
-    );
-    expect(
-      validateOutboundHttpUrl('http://169.254.169.254/latest/meta-data', 'http://169.254.169.254')
-        .allowed
-    ).toBe(false);
-    expect(validateOutboundHttpUrl('http://0.12.34.56/resource', 'http://0.12.34.56').allowed).toBe(
-      false
-    );
-    expect(validateOutboundHttpUrl('http://[::]/resource', 'http://[::]').allowed).toBe(false);
+  it('blocks localhost, special-use, and private addresses from outbound fetches', () => {
+    const expectBlocked = (url: string, expectedReason: string) => {
+      const result = validateOutboundHttpUrl(url, url);
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain(expectedReason);
+    };
+
+    expectBlocked('http://localhost:3000/file', 'localhost');
+    expectBlocked('http://10.0.0.20/report', 'private RFC1918 address');
+    expectBlocked('http://172.16.5.10/report', 'private RFC1918 address');
+    expectBlocked('http://192.168.1.20/report', 'private RFC1918 address');
+    expectBlocked('http://127.0.0.1/private', 'loopback address');
+    expectBlocked('http://169.254.1.1/private', 'link-local address');
+    expectBlocked('http://169.254.169.254/latest/meta-data', 'cloud metadata endpoint');
+    expectBlocked('http://0.12.34.56/resource', 'unspecified IPv4 address');
+    expectBlocked('http://[::]/resource', 'unspecified IPv6 address');
   });
 
   it('cancels body and blocks redirect hops to unsafe hosts before following', async () => {
@@ -215,6 +216,49 @@ describe('external download helpers', () => {
 
       expect(result.directLink?.ext).toBe(testCase.expected);
     }
+  });
+
+  it('emits directLink when content-type is missing but URL/headers indicate a file download', async () => {
+    const dnsLookup = vi.fn(async () => [{ address: '203.0.113.10', family: 4 }]);
+
+    const result = await fetchExternalResource(
+      'https://downloads.example/files/42/download?download=1',
+      { timeoutMs: 2_000, maxRetries: 0, dnsLookup },
+      vi.fn(async () =>
+        new Response(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
+          status: 200,
+          headers: {
+            'content-disposition': 'attachment; filename="lecture-notes.pdf"'
+          }
+        })
+      )
+    );
+
+    expect(result.contentType).toBeUndefined();
+    expect(result.directLink).toEqual({
+      url: 'https://downloads.example/files/42/download?download=1',
+      ext: 'pdf',
+      confidence: 'high'
+    });
+    expect(result.html).toBeUndefined();
+  });
+
+  it('keeps parsing as html when content-type is missing and there are no download hints', async () => {
+    const dnsLookup = vi.fn(async () => [{ address: '203.0.113.10', family: 4 }]);
+
+    const result = await fetchExternalResource(
+      'https://downloads.example/materials/overview',
+      { timeoutMs: 2_000, maxRetries: 0, dnsLookup },
+      vi.fn(async () =>
+        new Response(new TextEncoder().encode('<html><body>Overview page</body></html>'), {
+          status: 200
+        })
+      )
+    );
+
+    expect(result.contentType).toBeUndefined();
+    expect(result.directLink).toBeUndefined();
+    expect(result.html).toContain('Overview page');
   });
 });
 

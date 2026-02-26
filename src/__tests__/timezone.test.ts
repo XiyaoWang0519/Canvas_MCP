@@ -26,6 +26,7 @@ afterEach(() => {
 
 describe('loadEnv', () => {
   it('defaults CANVAS_TIMEZONE to UTC when unset', async () => {
+    process.env.CANVAS_TIMEZONE = '';
     const envModule = await import('../core/env.js');
     envModule.resetEnvCacheForTesting();
     const env = envModule.loadEnv();

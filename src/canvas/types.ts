@@ -52,20 +52,6 @@ export interface CanvasTodoItem {
   course_id?: number;
 }
 
-export interface CanvasPlannerItem {
-  context_type?: string;
-  course_id?: number;
-  plannable_id: number;
-  plannable_type: string;
-  plannable?: {
-    id: number;
-    title?: string;
-    due_at?: string | null;
-    html_url?: string;
-  };
-  html_url?: string;
-}
-
 export interface CanvasFile {
   id: number;
   uuid?: string;

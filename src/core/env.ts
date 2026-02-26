@@ -97,7 +97,7 @@ function isValidTimeZone(timeZone: string): boolean {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone });
     return true;
-  } catch (error) {
+  } catch {
     return false;
   }
 }

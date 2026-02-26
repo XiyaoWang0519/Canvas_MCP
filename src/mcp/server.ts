@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 import express, { Request, Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -205,7 +207,9 @@ function authorize(req: Request, res: Response, token: string): boolean {
   }
 
   const provided = header.slice('Bearer '.length).trim();
-  if (provided !== token) {
+  const providedBuf = Buffer.from(provided);
+  const expectedBuf = Buffer.from(token);
+  if (providedBuf.length !== expectedBuf.length || !timingSafeEqual(providedBuf, expectedBuf)) {
     res.status(403).json({ error: 'Invalid bearer token' });
     return false;
   }

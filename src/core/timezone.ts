@@ -1,17 +1,23 @@
 import { loadEnv } from './env.js';
 
-const { canvasTimezone } = loadEnv();
+let dateTimeFormatter: Intl.DateTimeFormat | null = null;
 
-const dateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: canvasTimezone,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hourCycle: 'h23'
-});
+function getFormatter(): Intl.DateTimeFormat {
+  if (!dateTimeFormatter) {
+    const { canvasTimezone } = loadEnv();
+    dateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: canvasTimezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    });
+  }
+  return dateTimeFormatter;
+}
 
 function pad(value: number): string {
   return value.toString().padStart(2, '0');
@@ -63,7 +69,7 @@ export function toCanvasTimezone(value: string | null | undefined): string | nul
     return value;
   }
 
-  const parts = dateTimeFormatter.formatToParts(date);
+  const parts = getFormatter().formatToParts(date);
   const { year, month, day, hour, minute, second } = partsToNumbers(parts);
 
   const targetTimestamp = Date.UTC(year, month - 1, day, hour, minute, second);

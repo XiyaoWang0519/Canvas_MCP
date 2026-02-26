@@ -119,44 +119,6 @@ export function mapUpcomingFromAssignment(
   return mapAssignment(assignment, source) as UpcomingItem;
 }
 
-export function normalizePlannerItem(
-  assignment: CanvasAssignment | undefined,
-  planner: {
-    course_id?: number;
-    plannable_id: number;
-    plannable?: {
-      id: number;
-      title?: string;
-      due_at?: string | null;
-      html_url?: string;
-    };
-    html_url?: string;
-  }
-): CanvasAssignment | undefined {
-  if (!assignment && planner.plannable) {
-    const plannable = planner.plannable;
-    return {
-      id: planner.plannable_id,
-      course_id: planner.course_id ?? 0,
-      name: plannable.title ?? 'Untitled',
-      due_at: plannable.due_at ?? null,
-      points_possible: null,
-      html_url: plannable.html_url ?? planner.html_url ?? ''
-    };
-  }
-
-  if (assignment) {
-    return {
-      ...assignment,
-      course_id: assignment.course_id || planner.course_id || 0,
-      html_url: assignment.html_url || planner.html_url || '',
-      due_at: assignment.due_at ?? planner.plannable?.due_at ?? null
-    };
-  }
-
-  return undefined;
-}
-
 export function mapFile(raw: CanvasFile): FileResource {
   return {
     id: raw.id,

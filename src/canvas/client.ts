@@ -18,6 +18,7 @@ export interface CanvasClientOptions {
   maxRetries?: number;
   defaultPerPage?: number;
   httpTimeoutMs?: number;
+  maxPages?: number;
 }
 
 export interface CanvasRequestOptions {
@@ -37,12 +38,14 @@ export class CanvasClient {
   private readonly maxRetries: number;
   private readonly defaultPerPage: number;
   private readonly httpTimeoutMs: number;
+  private readonly maxPages: number;
 
   constructor(options: CanvasClientOptions) {
     this.baseUrl = options.baseUrl;
     this.maxRetries = options.maxRetries ?? 3;
     this.defaultPerPage = options.defaultPerPage ?? 100;
     this.httpTimeoutMs = options.httpTimeoutMs ?? 15000;
+    this.maxPages = options.maxPages ?? 50;
 
     this.auth = createAuthStrategy({
       baseUrl: this.baseUrl,
@@ -81,8 +84,13 @@ export class CanvasClient {
       per_page: this.defaultPerPage,
       ...params
     });
+    let page = 0;
 
     while (nextUrl) {
+      if (page >= this.maxPages) {
+        break;
+      }
+      page += 1;
       const response = await this.fetchWithRetry(nextUrl, {
         method: 'GET',
         signal: options?.signal

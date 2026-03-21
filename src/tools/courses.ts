@@ -47,6 +47,15 @@ export function filterRecentCourses(courses: Course[]): Course[] {
   });
 }
 
+export function isPlaceholderCourse(course: Course): boolean {
+  const fallback = `COURSE-${course.id}`;
+  return course.name === fallback && course.course_code === fallback && !course.term;
+}
+
+export function filterPlaceholderCourses(courses: Course[]): Course[] {
+  return courses.filter((course) => !isPlaceholderCourse(course));
+}
+
 function extractCourseYear(course: Course): number | null {
   const termYear = extractYear(course.term);
   if (termYear !== null) {
@@ -129,6 +138,7 @@ export function registerListCourses(server: McpServer, deps: ToolDependencies): 
 
         let courses = data.map(mapCourse);
         courses = sortCoursesByRecency(courses);
+        courses = filterPlaceholderCourses(courses);
 
         if (!includePast) {
           courses = filterRecentCourses(courses);

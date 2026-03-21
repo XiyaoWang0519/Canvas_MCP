@@ -244,4 +244,59 @@ describe('list_upcoming', () => {
       'Failed to fetch upcoming assignments for all courses.'
     );
   });
+
+  it('filters placeholder ghost courses before scanning assignments', async () => {
+    const canvas = {
+      getAll: vi.fn(async (path: string) => {
+        if (path === '/api/v1/users/self/todo') {
+          return {
+            data: [],
+            status: 200,
+            requestId: 'todo'
+          };
+        }
+
+        if (path === '/api/v1/users/self/courses') {
+          return {
+            data: [
+              { id: 999, name: '', course_code: '', term: { name: '' } },
+              { id: 1, name: 'ECE496Y1 Y LEC0101 20259:Design Project', course_code: 'ECE496Y1 Y LEC0101', term: { name: '2025 Fall-Winter' } }
+            ],
+            status: 200,
+            requestId: 'courses'
+          };
+        }
+
+        if (path === '/api/v1/courses/1/assignments') {
+          return {
+            data: [
+              {
+                id: 20,
+                course_id: 1,
+                name: 'Assignment A',
+                due_at: '2025-01-02T00:00:00Z',
+                points_possible: 10,
+                html_url: 'https://canvas.example.com/courses/1/assignments/20'
+              }
+            ],
+            status: 200,
+            requestId: 'a1'
+          };
+        }
+
+        if (path === '/api/v1/courses/999/assignments') {
+          throw new Error('placeholder course should not be scanned');
+        }
+
+        throw new Error(`Unexpected path ${path}`);
+      })
+    };
+
+    const handler = await loadListUpcomingHandler(canvas);
+    const result = await handler({ days: 7 });
+
+    expect(result.structuredContent.upcoming.map((item) => item.id)).toEqual([20]);
+    expect(canvas.getAll.mock.calls.some(([path]) => path === '/api/v1/courses/999/assignments'))
+      .toBe(false);
+  });
 });

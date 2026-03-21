@@ -14,7 +14,11 @@ import {
   listAssignmentsOutputSchema,
   listUpcomingOutputSchema
 } from './schemas.js';
-import { mapAssignment, mapUpcomingFromAssignment } from './mappers.js';
+import { mapAssignment, mapCourse, mapUpcomingFromAssignment } from './mappers.js';
+import {
+  filterPlaceholderCourses,
+  sortCoursesByRecency
+} from './courses.js';
 import {
   createConcurrencyLimiter,
   wrapTool,
@@ -187,7 +191,10 @@ export function registerListUpcoming(server: McpServer, deps: ToolDependencies):
 
       const coursesResult = await deps.canvas.getAll<CanvasCourse>(
         '/api/v1/users/self/courses',
-        { 'enrollment_state[]': ['active'] }
+        {
+          'enrollment_state[]': ['active'],
+          'include[]': ['term']
+        }
       );
       if (coursesResult.requestIds) {
         metaRequestIds.push(...coursesResult.requestIds);
@@ -197,7 +204,13 @@ export function registerListUpcoming(server: McpServer, deps: ToolDependencies):
       metaStatuses.push(coursesResult.status);
 
       const maxCourses = args.max_courses ?? coursesResult.data.length;
-      const courses = coursesResult.data.slice(0, maxCourses);
+      const courseById = new Map(coursesResult.data.map((course) => [course.id, course]));
+      const courses = filterPlaceholderCourses(
+        sortCoursesByRecency(coursesResult.data.map(mapCourse))
+      )
+        .slice(0, maxCourses)
+        .map((course) => courseById.get(course.id))
+        .filter((course): course is CanvasCourse => Boolean(course));
       const limitAssignments = createConcurrencyLimiter(UPCOMING_ASSIGNMENT_CONCURRENCY);
 
       type AssignmentSuccess = {

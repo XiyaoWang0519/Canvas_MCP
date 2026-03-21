@@ -1,16 +1,25 @@
 import { lookup } from 'node:dns/promises';
 import type { LookupAddress } from 'node:dns';
 import { isIP } from 'node:net';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { fetch, type Response } from 'undici';
 
 import { sleep } from '../core/async.js';
 import { USER_AGENT } from '../core/meta.js';
-import { stripHtml } from './course-materials.js';
-import type {
-  ExternalDownloadResolutionLink,
-  ExternalDownloadResolutionStatus,
-  ResolveExternalDownloadsMaterialResult
+import {
+  collectCourseMaterialsFromModules,
+  stripHtml,
+  type MetaAccumulator
+} from './course-materials.js';
+import {
+  resolveExternalDownloadsInputSchema,
+  resolveExternalDownloadsOutputSchema,
+  type CourseMaterial,
+  type MaterialType,
+  type ExternalDownloadResolutionLink,
+  type ResolveExternalDownloadsMaterialResult
 } from './schemas.js';
+import { wrapTool, type ToolDependencies } from './shared.js';
 
 const DOWNLOAD_EXTENSIONS = new Set([
   'pdf',
@@ -1096,4 +1105,557 @@ export function finalizeResultStatus(
   }
 
   return result;
+}
+
+const EXTERNAL_DOWNLOADS_DEFAULT_MAX_PAGES = 20;
+const EXTERNAL_DOWNLOADS_MAX_PAGES = 100;
+const EXTERNAL_DOWNLOADS_DEFAULT_MAX_LINKS_PER_PAGE = 50;
+const EXTERNAL_DOWNLOADS_MAX_LINKS_PER_PAGE = 200;
+const EXTERNAL_DOWNLOADS_DEFAULT_TIMEOUT_MS = 15_000;
+const EXTERNAL_DOWNLOADS_MIN_TIMEOUT_MS = 2_000;
+const EXTERNAL_DOWNLOADS_MAX_TIMEOUT_MS = 60_000;
+
+type ExternalDownloadToolDependencies = ToolDependencies & {
+  fetchImpl?: ExternalFetchLike;
+};
+
+function clampInteger(value: number, min: number, max: number): number {
+  const normalized = Number.isFinite(value) ? Math.floor(value) : min;
+  return Math.min(max, Math.max(min, normalized));
+}
+
+function getMaterialSourceUrl(material: CourseMaterial): string | undefined {
+  const preferredRef =
+    material.item_refs.find((entry) => entry.external_url || entry.url || entry.html_url) ??
+    material.item_refs[0];
+
+  const rawSource =
+    material.external?.url ??
+    material.external?.html_url ??
+    preferredRef?.external_url ??
+    preferredRef?.url ??
+    preferredRef?.html_url;
+
+  if (!rawSource) {
+    return undefined;
+  }
+
+  const baseCandidates = [
+    preferredRef?.html_url,
+    preferredRef?.url,
+    preferredRef?.external_url,
+    process.env.CANVAS_BASE_URL
+  ];
+
+  const direct = toAbsoluteHttpUrl(rawSource, rawSource);
+  if (direct) {
+    return direct;
+  }
+
+  for (const base of baseCandidates) {
+    if (!base) {
+      continue;
+    }
+
+    const normalized = toAbsoluteHttpUrl(rawSource, base);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return rawSource;
+}
+
+function getSessionlessLaunchBaseUrls(): string[] {
+  const candidates: string[] = [];
+
+  const canvasBase = process.env.CANVAS_BASE_URL;
+  if (canvasBase) {
+    const normalizedCanvasBase = toAbsoluteHttpUrl(canvasBase, canvasBase);
+    if (normalizedCanvasBase) {
+      candidates.push(normalizedCanvasBase);
+
+      try {
+        candidates.push(new URL(normalizedCanvasBase).origin);
+      } catch (error) {
+        // Ignore malformed base URL fallback.
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    candidates.push('https://canvas.invalid/');
+  }
+
+  return Array.from(new Set(candidates));
+}
+
+function parseLaunchUrl(payload: unknown, baseUrls: string[]): string | undefined {
+  const candidates: unknown[] = [];
+
+  if (typeof payload === 'string') {
+    candidates.push(payload);
+  } else if (payload && typeof payload === 'object') {
+    const value = payload as Record<string, unknown>;
+    candidates.push(
+      value.url,
+      value.launch_url,
+      value.sessionless_launch_url,
+      value.html_url,
+      value.target_link_uri
+    );
+  }
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+
+    const direct = toAbsoluteHttpUrl(candidate, candidate);
+    if (direct) {
+      return direct;
+    }
+
+    for (const baseUrl of baseUrls) {
+      const normalized = toAbsoluteHttpUrl(candidate, baseUrl);
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+async function resolveExternalToolLaunchUrl(args: {
+  material: CourseMaterial;
+  courseId: number;
+  deps: ExternalDownloadToolDependencies;
+  meta: MetaAccumulator;
+}): Promise<{ launchUrl?: string; reason?: string }> {
+  const sourceUrl = getMaterialSourceUrl(args.material);
+
+  const strategies: Array<{ params: Record<string, unknown>; label: string }> = [];
+  for (const itemRef of args.material.item_refs) {
+    if (typeof itemRef.content_id === 'number') {
+      strategies.push({
+        params: { id: itemRef.content_id },
+        label: `id=${itemRef.content_id}`
+      });
+    }
+  }
+
+  if (sourceUrl) {
+    strategies.push({
+      params: { url: sourceUrl },
+      label: 'url=<source>'
+    });
+  }
+
+  if (strategies.length === 0) {
+    return {
+      reason: 'No launch identifier was available for this external tool item.'
+    };
+  }
+
+  let lastReason: string | undefined;
+  const launchBaseUrls = getSessionlessLaunchBaseUrls();
+
+  for (const strategy of strategies) {
+    try {
+      const launchResult = await args.deps.canvas.get<Record<string, unknown>>(
+        `/api/v1/courses/${args.courseId}/external_tools/sessionless_launch`,
+        strategy.params
+      );
+      args.meta.statuses.push(launchResult.status);
+      if (launchResult.requestIds) {
+        args.meta.requestIds.push(...launchResult.requestIds);
+      } else if (launchResult.requestId) {
+        args.meta.requestIds.push(launchResult.requestId);
+      }
+
+      const launchUrl = parseLaunchUrl(launchResult.data, launchBaseUrls);
+      if (launchUrl) {
+        return { launchUrl };
+      }
+
+      lastReason =
+        'Canvas sessionless launch endpoint responded without a usable launch URL.';
+    } catch (error) {
+      if (error instanceof Error && 'code' in error) {
+        const maybeCode = (error as { code?: string }).code;
+        if (maybeCode === 'AUTHORIZATION_FAILED') {
+          return {
+            reason:
+              'Canvas denied sessionless launch for this external tool. A browser-based launch is likely required.'
+          };
+        }
+
+        if (maybeCode === 'NOT_FOUND' || maybeCode === 'BAD_REQUEST') {
+          lastReason =
+            'Canvas sessionless launch endpoint did not resolve this tool by id/url.';
+          continue;
+        }
+      }
+
+      lastReason =
+        error instanceof Error
+          ? `Failed to resolve external tool launch URL (${strategy.label}): ${error.message}`
+          : `Failed to resolve external tool launch URL (${strategy.label}).`;
+    }
+  }
+
+  return {
+    reason:
+      lastReason ??
+      'Unable to resolve an API-based launch URL for this external tool; browser fallback is likely required.'
+  };
+}
+
+function classifyHttpFailureStatus(
+  status: number,
+  type: 'ExternalUrl' | 'ExternalTool'
+): ResolveExternalDownloadsMaterialResult['status'] {
+  if (status === 401 || status === 403) {
+    return type === 'ExternalTool' ? 'needs_browser_fallback' : 'blocked';
+  }
+
+  return status >= 500 ? 'partial' : 'error';
+}
+
+async function resolveExternalMaterialLinks(args: {
+  material: CourseMaterial;
+  courseId: number;
+  timeoutMs: number;
+  maxLinksPerPage: number;
+  deps: ExternalDownloadToolDependencies;
+  meta: MetaAccumulator;
+}): Promise<{ result: ResolveExternalDownloadsMaterialResult; linksTruncated: boolean }> {
+  const sourceUrl = getMaterialSourceUrl(args.material);
+
+  const baseResult: ResolveExternalDownloadsMaterialResult = {
+    key: args.material.key,
+    type: args.material.type === 'ExternalTool' ? 'ExternalTool' : 'ExternalUrl',
+    title: args.material.title,
+    source_url: sourceUrl ?? '',
+    status: 'error',
+    links: []
+  };
+
+  if (!sourceUrl) {
+    return {
+      result: {
+        ...baseResult,
+        reason: 'No source URL was available for this material.'
+      },
+      linksTruncated: false
+    };
+  }
+
+  let targetUrl = sourceUrl;
+  if (args.material.type === 'ExternalTool') {
+    const launchResolution = await resolveExternalToolLaunchUrl({
+      material: args.material,
+      courseId: args.courseId,
+      deps: args.deps,
+      meta: args.meta
+    });
+
+    if (!launchResolution.launchUrl) {
+      return {
+        result: {
+          ...baseResult,
+          status: 'needs_browser_fallback',
+          reason:
+            launchResolution.reason ??
+            'Unable to resolve a sessionless launch URL for this external tool.',
+          source_url: sourceUrl
+        },
+        linksTruncated: false
+      };
+    }
+
+    targetUrl = launchResolution.launchUrl;
+    baseResult.resolved_url = targetUrl;
+  }
+
+  const outboundValidation = validateOutboundHttpUrl(targetUrl, targetUrl);
+  if (!outboundValidation.allowed) {
+    return {
+      result: {
+        ...baseResult,
+        status: args.material.type === 'ExternalTool' ? 'needs_browser_fallback' : 'blocked',
+        source_url: sourceUrl,
+        resolved_url: outboundValidation.normalizedUrl ?? baseResult.resolved_url,
+        reason: outboundValidation.reason ?? 'Blocked outbound URL target.'
+      },
+      linksTruncated: false
+    };
+  }
+
+  const validatedTargetUrl = outboundValidation.normalizedUrl ?? targetUrl;
+  if (args.material.type === 'ExternalTool') {
+    baseResult.resolved_url = validatedTargetUrl;
+  }
+
+  const fetched = await fetchExternalResource(
+    validatedTargetUrl,
+    {
+      timeoutMs: args.timeoutMs,
+      maxRetries: 2
+    },
+    args.deps.fetchImpl
+  );
+
+  if (fetched.blockedReason) {
+    return {
+      result: {
+        ...baseResult,
+        status: args.material.type === 'ExternalTool' ? 'needs_browser_fallback' : 'blocked',
+        reason: fetched.blockedReason,
+        source_url: sourceUrl,
+        resolved_url: fetched.finalUrl ?? baseResult.resolved_url
+      },
+      linksTruncated: false
+    };
+  }
+
+  if (fetched.error) {
+    const status = args.material.type === 'ExternalTool' ? 'needs_browser_fallback' : 'error';
+    return {
+      result: {
+        ...baseResult,
+        status,
+        reason: fetched.error,
+        source_url: sourceUrl,
+        resolved_url: fetched.finalUrl ?? baseResult.resolved_url
+      },
+      linksTruncated: false
+    };
+  }
+
+  const responseStatus = fetched.status ?? 0;
+  if (responseStatus >= 400) {
+    const status = classifyHttpFailureStatus(responseStatus, baseResult.type);
+
+    return {
+      result: {
+        ...baseResult,
+        status,
+        source_url: sourceUrl,
+        resolved_url: fetched.finalUrl ?? baseResult.resolved_url,
+        reason: `HTTP ${responseStatus} while fetching external content.`
+      },
+      linksTruncated: false
+    };
+  }
+
+  if (fetched.directLink) {
+    const deduped = dedupeResolvedLinks([fetched.directLink]);
+    return {
+      result: {
+        ...baseResult,
+        status: deduped.length > 0 ? 'ok' : 'partial',
+        source_url: sourceUrl,
+        resolved_url: fetched.finalUrl ?? baseResult.resolved_url,
+        links: deduped,
+        reason: deduped.length > 0 ? undefined : 'Direct download URL was already deduplicated.'
+      },
+      linksTruncated: false
+    };
+  }
+
+  const extraction = extractExternalDownloadLinksFromHtml(fetched.html, {
+    baseUrl: fetched.finalUrl ?? validatedTargetUrl,
+    maxLinks: args.maxLinksPerPage
+  });
+
+  const links = dedupeResolvedLinks(extraction.links);
+
+  if (links.length === 0) {
+    const fallbackReason = classifyBrowserFallbackReason(fetched.html);
+
+    if (args.material.type === 'ExternalTool' || fallbackReason) {
+      return {
+        result: {
+          ...baseResult,
+          status: 'needs_browser_fallback',
+          source_url: sourceUrl,
+          resolved_url: fetched.finalUrl ?? baseResult.resolved_url,
+          reason:
+            fallbackReason ??
+            'No downloadable links were detected from the API-resolved external tool page.',
+          links
+        },
+        linksTruncated: extraction.truncated
+      };
+    }
+
+    return {
+      result: {
+        ...baseResult,
+        status: 'partial',
+        source_url: sourceUrl,
+        resolved_url: fetched.finalUrl ?? baseResult.resolved_url,
+        reason: 'No candidate download links were detected in the fetched HTML.',
+        links
+      },
+      linksTruncated: extraction.truncated
+    };
+  }
+
+  return {
+    result: {
+      ...baseResult,
+      status: extraction.truncated ? 'partial' : 'ok',
+      source_url: sourceUrl,
+      resolved_url: fetched.finalUrl ?? baseResult.resolved_url,
+      reason: extraction.truncated
+        ? 'Link extraction was truncated by max_links_per_page.'
+        : undefined,
+      links
+    },
+    linksTruncated: extraction.truncated
+  };
+}
+
+export function registerResolveExternalDownloads(
+  server: McpServer,
+  deps: ExternalDownloadToolDependencies
+): void {
+  server.registerTool(
+    'resolve_external_downloads',
+    {
+      title: 'Resolve External Downloads',
+      description:
+        'Resolve ExternalUrl/ExternalTool module items and extract candidate downloadable links using API-first HTTP fetching.',
+      inputSchema: resolveExternalDownloadsInputSchema.shape,
+      outputSchema: resolveExternalDownloadsOutputSchema.shape
+    },
+    wrapTool(
+      'resolve_external_downloads',
+      async (args: {
+        course_id: number;
+        material_keys?: string[];
+        max_pages?: number;
+        max_links_per_page?: number;
+        timeout_ms?: number;
+      }) => {
+        const maxPages = clampInteger(
+          args.max_pages ?? EXTERNAL_DOWNLOADS_DEFAULT_MAX_PAGES,
+          1,
+          EXTERNAL_DOWNLOADS_MAX_PAGES
+        );
+        const maxLinksPerPage = clampInteger(
+          args.max_links_per_page ?? EXTERNAL_DOWNLOADS_DEFAULT_MAX_LINKS_PER_PAGE,
+          1,
+          EXTERNAL_DOWNLOADS_MAX_LINKS_PER_PAGE
+        );
+        const timeoutMs = clampInteger(
+          args.timeout_ms ?? EXTERNAL_DOWNLOADS_DEFAULT_TIMEOUT_MS,
+          EXTERNAL_DOWNLOADS_MIN_TIMEOUT_MS,
+          EXTERNAL_DOWNLOADS_MAX_TIMEOUT_MS
+        );
+
+        const meta: MetaAccumulator = {
+          statuses: [],
+          requestIds: []
+        };
+
+        const collected = await collectCourseMaterialsFromModules({
+          courseId: args.course_id,
+          includeTypes: new Set<MaterialType>(['ExternalUrl', 'ExternalTool']),
+          deps,
+          meta
+        });
+
+        const materialsByKey = new Map(collected.materials.map((material) => [material.key, material]));
+
+        let candidates: CourseMaterial[];
+        if (args.material_keys && args.material_keys.length > 0) {
+          const seen = new Set<string>();
+          candidates = [];
+
+          for (const key of args.material_keys) {
+            if (!key || seen.has(key)) {
+              continue;
+            }
+            seen.add(key);
+
+            const material = materialsByKey.get(key);
+            if (material) {
+              candidates.push(material);
+            }
+          }
+        } else {
+          candidates = [...collected.materials].sort((a, b) => a.key.localeCompare(b.key));
+        }
+
+        const truncatedByPages = candidates.length > maxPages;
+        const processQueue = candidates.slice(0, maxPages);
+        const globalSeenLinks = new Set<string>();
+
+        let truncated = truncatedByPages;
+        const results: ResolveExternalDownloadsMaterialResult[] = [];
+
+        for (const material of processQueue) {
+          const { result, linksTruncated } = await resolveExternalMaterialLinks({
+            material,
+            courseId: args.course_id,
+            timeoutMs,
+            maxLinksPerPage,
+            deps,
+            meta
+          });
+
+          const globallyDedupedLinks = dedupeResolvedLinks(result.links, globalSeenLinks);
+          let normalizedResult: ResolveExternalDownloadsMaterialResult = {
+            ...result,
+            links: globallyDedupedLinks
+          };
+
+          if (
+            result.status === 'ok' &&
+            result.links.length > 0 &&
+            globallyDedupedLinks.length === 0
+          ) {
+            normalizedResult = {
+              ...normalizedResult,
+              status: 'partial',
+              reason: 'All discovered links were duplicates of earlier materials.'
+            };
+          }
+
+          normalizedResult = finalizeResultStatus(normalizedResult, {
+            linksTruncated
+          });
+
+          if (linksTruncated) {
+            truncated = true;
+          }
+
+          results.push(normalizedResult);
+        }
+
+        const totalLinks = results.reduce((sum, entry) => sum + entry.links.length, 0);
+
+        const payload = resolveExternalDownloadsOutputSchema.parse({
+          course_id: args.course_id,
+          processed_materials: results.length,
+          results,
+          total_links: totalLinks,
+          truncated
+        });
+
+        return {
+          payload,
+          meta: {
+            status: meta.statuses.at(-1),
+            requestId: meta.requestIds.at(-1),
+            requestIds: meta.requestIds
+          }
+        };
+      }
+    )
+  );
 }
